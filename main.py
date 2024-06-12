@@ -89,42 +89,49 @@ class SampleEnvironment(gym.Env):
         return -self.data.isna().sum().sum()
 
 class Agent: 
-    def __init__(self, n_action, n_state): 
-        self.epsilon_start = 0.9 # exploration 
-        self.epsilon_end = 0.05 # min exploration 
-        self.epsilon_decay = 0.995 # exploration decay
-        self.discount = 0.95 
-        self.lr = 1e-4 # learning rate
-        self.gamma = 0.99 # exploitation 
+    def __init__(self, n_state, n_action): 
+        self.epsilon = 0.9 # exploration 
+        self.min_epsilon = 0.01 # min exploration as exploitation becomes more important
+        self.lr = 0.1 # learning rate: adjust Q values to converge towards optimal strategy 
+        self.gamma = 0.99 # discounting rate (value of future rewards)
+        self.n_state = n_state 
+        self.n_action = n_action
         self.q_table = np.zeros((n_state, n_action))
-        self.n_action = n_action 
-        self.n_state = n_state
 
+    # Q learning: Temporal Difference Algorithm 
     def take_action(self, state):
-        if random.randrange(0, 1, 0.00001) < self.epsilon_start():
+        if np.random.rand() < self.epsilon: # Epsilon greedy strategy for current state
             return np.random.choice(self.n_action)
         return np.argmax(self.q_table[state, :])
 
-    def learn(self, state, next_state, action, reward, done):
-        best_next_action = np.argmax(self.q_table[state, :])
-        
+    def learn(self, state, next_state, action, reward, finished):
+        best_next_action = np.argmax(self.q_table[next_state, :]) # Greedy strategy for future state
+        td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - finished)
+        td_error = td_prediction - self.q_table[state, action]
+        self.q_table += self.lr * td_error
+
+        if finished: 
+            self.epsilon = self.min_epsilon 
             
-    def step(self, env: SampleEnvironment):
-        action = random.choice(range(env.num_row))
-        _, reward, finished, _ = env.step(action)
-        self.total_rewards += reward
-        return finished
-
-if __name__ == "__main__": 
+if __name__ == "__main__":
     env = SampleEnvironment(train_data)
-    agent = Agent()
-
-    env.reset()
-    i = 0
-
-    while not env.finish and i < 1000:  # limit iterations to prevent infinite loop
-        i += 1
-        finished = agent.step(env)
+    agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
+    
+    episodes = 1000
+    for episode in range(episodes):
+        state = env.reset()
+        total_reward = 0
+        
+        while True:
+            action = agent.take_action(state)
+            next_state, reward, finished, _ = env.step(action)
+            agent.learn(state, action, reward, next_state, finished)
+            state = next_state
+            total_reward += reward
+            
+            if finished:
+                print(f"Episode: {episode+1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
+                break 
         if finished:
             break
     print("Total Rewards:", agent.total_rewards)
