@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-
 import pandas as pd 
 import numpy as np
 import seaborn as sns 
@@ -14,7 +11,7 @@ from sklearn.impute import IterativeImputer
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 
-file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_klein.xlsx"
+file_path = PATH TO FILE 
 data = pd.read_excel(file_path)
 
 # Data cleaning, formatting and encoding (categorical variables)
@@ -32,7 +29,6 @@ for column in data.select_dtypes(include=['object']).columns:
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0) 
 
 print(data.head())
-
 
 # Environment and Actions for RL
 class SampleEnvironment(gym.Env):
@@ -52,10 +48,10 @@ class SampleEnvironment(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_row, self.num_col), dtype=np.float32) 
     
     def reset(self):
-        self.data = self.original_data.copy()
+        self.data = self.original_data.copy() 
         self.iteration = 0 
-        self.current_col = 0
-        return self.data.values
+        self.current_col = 0 
+        return self.data.values.flatten() 
         
     def step(self, action): 
         row_i = action 
@@ -73,7 +69,7 @@ class SampleEnvironment(gym.Env):
         reward = self.calculate_reward()
         if finished: 
             self.finish = True 
-        return self.data.values, reward, finished, {}
+        return self.data.values.flatten(), reward, finished, {}
 
     def impute_value(self, row_i, column_i):
         # Iterative Imputer with Random Forest Regressor as base model 
@@ -87,6 +83,7 @@ class SampleEnvironment(gym.Env):
     def calculate_reward(self):
         # Simple reward: negative count of remaining NaNs
         return -self.data.isna().sum().sum()
+        
 
 class Agent: 
     def __init__(self, n_state, n_action): 
@@ -102,17 +99,20 @@ class Agent:
     def take_action(self, state):
         if np.random.rand() < self.epsilon: # Epsilon greedy strategy for current state
             return np.random.choice(self.n_action)
-        return np.argmax(self.q_table[state, :])
+        return self.q_table[state.max()]
+#        return np.argmax(self.q_table[state, axis=action])
 
-    def learn(self, state, next_state, action, reward, finished):
-        best_next_action = np.argmax(self.q_table[next_state, :]) # Greedy strategy for future state
+    def learn(self, state, next_state, action, reward, finished):   
+        best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
         td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - finished)
-        td_error = td_prediction - self.q_table[state, action]
+        td_error = abs(td_prediction - self.q_table[state, action])
         self.q_table += self.lr * td_error
 
+        # decrease exploration to encourage exploitation 
         if finished: 
             self.epsilon = self.min_epsilon 
             
+
 if __name__ == "__main__":
     env = SampleEnvironment(train_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
@@ -120,6 +120,7 @@ if __name__ == "__main__":
     episodes = 1000
     for episode in range(episodes):
         state = env.reset()
+        reward = env.calculate_reward()
         total_reward = 0
         
         while True:
@@ -132,6 +133,3 @@ if __name__ == "__main__":
             if finished:
                 print(f"Episode: {episode+1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
                 break 
-        if finished:
-            break
-    print("Total Rewards:", agent.total_rewards)
