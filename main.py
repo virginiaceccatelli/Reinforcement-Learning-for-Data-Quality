@@ -11,7 +11,7 @@ from sklearn.impute import IterativeImputer
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 
-file_path = PATH TO FILE 
+file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_klein.xlsx"
 data = pd.read_excel(file_path)
 
 # Data cleaning, formatting and encoding (categorical variables)
@@ -29,6 +29,7 @@ for column in data.select_dtypes(include=['object']).columns:
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0) 
 
 print(data.head())
+print(data.isna().sum().sum())
 
 # Environment and Actions for RL
 class SampleEnvironment(gym.Env):
@@ -74,7 +75,6 @@ class SampleEnvironment(gym.Env):
     def impute_value(self, row_i, column_i):
         # Iterative Imputer with Random Forest Regressor as base model 
         target_col = self.data.columns[column_i]
-        with_values = self.data.drop(columns=[target_col])
 
         imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
         imputed_data = imputer.fit_transform(self.data)
@@ -83,7 +83,6 @@ class SampleEnvironment(gym.Env):
     def calculate_reward(self):
         # Simple reward: negative count of remaining NaNs
         return -self.data.isna().sum().sum()
-        
 
 class Agent: 
     def __init__(self, n_state, n_action): 
@@ -95,23 +94,29 @@ class Agent:
         self.n_action = n_action
         self.q_table = np.zeros((n_state, n_action))
 
+    def state_to_index(self, state):
+        return hash(tuple(state)) % self.n_state
+
     # Q learning: Temporal Difference Algorithm 
     def take_action(self, state):
-        if np.random.rand() < self.epsilon: # Epsilon greedy strategy for current state
-            return np.random.choice(self.n_action)
-        return self.q_table[state.max()]
-#        return np.argmax(self.q_table[state, axis=action])
+        if np.random.rand() > self.epsilon: # Epsilon greedy strategy for current state
+            return np.random.choice(self.n_action) # Exploration
+        return np.argmax(self.q_table[self.current_state])
 
-    def learn(self, state, next_state, action, reward, finished):   
+    def learn(self, state, next_state, action, reward, finished): 
+        state_index = self.state_to_index(state)
         best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
         td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - finished)
-        td_error = abs(td_prediction - self.q_table[state, action])
-        self.q_table += self.lr * td_error
+        td_error = td_prediction - self.q_table[state_index, action]
+        td_error_scalar = np.mean(td_error)
+        self.q_table[state_index, action] += (self.lr * td_error_scalar)
 
         # decrease exploration to encourage exploitation 
         if finished: 
-            self.epsilon = self.min_epsilon 
-            
+            self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma)
+
+    def update_state(self, state):
+        self.current_state = self.state_to_index(state)
 
 if __name__ == "__main__":
     env = SampleEnvironment(train_data)
@@ -121,6 +126,7 @@ if __name__ == "__main__":
     for episode in range(episodes):
         state = env.reset()
         reward = env.calculate_reward()
+        agent.update_state(state)
         total_reward = 0
         
         while True:
