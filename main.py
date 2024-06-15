@@ -11,7 +11,7 @@ from sklearn.impute import IterativeImputer
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 
-file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_klein.xlsx"
+file_path = FILE PATH
 data = pd.read_excel(file_path)
 
 # Data cleaning, formatting and encoding (categorical variables)
