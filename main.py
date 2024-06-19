@@ -140,17 +140,19 @@ class Agent:
 
     # Q learning: Temporal Difference Algorithm (Policy Evaluation)
     def take_action(self, state):
+        state_index = self.state_to_index(state)
         if np.random.rand() > self.epsilon: # Epsilon greedy strategy for current state
             return np.random.choice(self.n_action) # Exploration
-        return np.argmax(self.q_table[self.current_state])
+        return np.argmax(self.q_table[state_index])
 
     def learn(self, state, next_state, action, reward, finished): 
         state_index = self.state_to_index(state)
+        action_converted = action.astype(int)
         best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
         td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - finished)
-        td_error = td_prediction - self.q_table[state_index, action]
+        td_error = abs(td_prediction - self.q_table[state_index, action_converted])
         td_error_scalar = np.mean(td_error)
-        self.q_table[state_index, action] += (self.lr * td_error_scalar)
+        self.q_table[state_index, action_converted] += (self.lr * td_error_scalar)
 
         # decrease exploration to encourage exploitation 
         if finished: 
