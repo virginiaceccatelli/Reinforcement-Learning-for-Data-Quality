@@ -27,7 +27,7 @@ for column in data.select_dtypes(include=['object']).columns:
         data[column] = le.fit_transform(data[column].astype(str))
         label_encoders[column] = le
 
-# Encode continuous text data: TF-IDF (Term Frequency-Inverse Document Frequency) - Converts text into a matrix of TF-IDF features
+# Encode continuous text data: TF-IDF (Term Frequency-Inverse Document Frequency) - Converts text into a matrix of TF-IDF features (not tested yet)
 vectorizer = {}
 text_column = text_columns = [column for column in data.select_dtypes(include=['object']).columns if data[column].nunique() > 20]
 
@@ -35,7 +35,7 @@ for column in text_column:
     text_vectors = vectorizer.fit_transform(data[text_column].astype(str).fillna('')).toarray() # Numpy array: each row corresponds to a row from the original DataFrame and each column corresponds to a TF-IDF feature
     # The list comprehension iterates over the range of column indices and creates unique names by concatenating the original column name and the index
     text_df = pd.DataFrame(text_vectors, columns=[f"{column}_{i}" for i in range(text_vectors.shape[1])]) # Each row in text_vectors corresponds to a row in the new DataFrame
-    data = pd.concat([data.drop(columns=[text_column]), text_df], axis=1)
+    data = pd.concat([data.drop(columns=[text_column]), text_df], axis=1) # Replaces old text data with new vector 
     vectorizers[column] = vectorizer
 
 # Train 75%, Test 25%: after training, use unseen data in test subset to estimate algorithm validity 
@@ -44,7 +44,7 @@ print(data.head())
 
 
 # Environment and Actions for RL
-class SampleEnvironment(gym.Env):
+class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance 
     def __init__(self, data):
         super(SampleEnvironment, self).__init__()
         self.data = data
@@ -68,13 +68,15 @@ class SampleEnvironment(gym.Env):
         self.current_col = 0 
         return self.data.values.flatten() 
 
-    # To iterate over each row in every column and apply impute_value and calculate_reward 
+    # STEP FOR COMPLETENESS: To iterate over each row in every column and apply impute_value where NaN, and calculate_reward 
     def step(self, action): 
         row_i = action 
         column_i = self.current_col
-        if pd.isna(self.data.iloc[row_i, column_i]):
-            self.data.iloc[row_i, column_i] = self.impute_value(row_i, column_i)
+        if pd.isna(self.data.iloc[row_i, column_i]): # look for NaN values 
+            self.data.iloc[row_i, column_i] = self.impute_value(row_i, column_i) 
         self.iteration += 1
+
+        # -- TO DO -- check if data entry is valid and accurate, if not apply functions   
 
         # Move to next column 
         if self.iteration >= self.num_row:
@@ -89,31 +91,39 @@ class SampleEnvironment(gym.Env):
 
     # To impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor'
     def impute_value(self, row_i, column_i):
+        
         # Iterative Imputer with Random Forest Regressor as base model 
         target_col = self.data.columns[column_i]
-
         imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
         imputed_data = imputer.fit_transform(self.data)
         return imputed_data[row_i, column_i]
 
-    # To calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (TO DO)
+    # -- TO DO -- functions for validity and accuracy; replacement of bad inputs 
+    
+    # To calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
     def calculate_reward(self):
-        # Completeness (to refine): the less NaN values, the higher the reward obtained 
-        na_reduction = -self.data.isna().sum().sum()
+        # Completeness: the less NaN values, the higher the reward obtained (proportional reduction: encourage the agent to focus on columns with a higher percentage of missing values)
+        previous_na = data.isnull().values.sum()
+        na_reduction = (self.data.isna().sum().sum() - previous_na) / previous_na
         
-        # Validity (to refine): if 
-        consistency_reward = 0
-        for column in self.data.columns:
-            if self.data[column].dtype in [np.float64, np.int64] and (self.data[column] < 0).any():
-                consistency_reward -= 10  
-        
-        # Accuracy (to do) 
+        # Validity: check if imputed values are of allowed datatype in column  
+        imputed_values = [] # TO GET FROM FUNCTION  
+        for column in data.columns:
+            column_type = data[column].dtype
+            for value in data[column]:
+                if value in imputed_values:
+                    if isinstance(value, column_type): 
+                        validity_reward = -10
+                    else:
+                        validity_reward = -1
+
+        # Accuracy
         accuracy_reward = 0
         
         # Total reward
-        total_reward = na_reduction + consistency_reward + accuracy_reward
+        total_reward = na_reduction + validity_reward + accuracy_reward
         return total_reward
-
+        
 
 class Agent: 
     def __init__(self, n_state, n_action): 
