@@ -43,9 +43,9 @@ train_data, test_data = train_test_split(data, test_size=0.25, random_state=0)
 print(data.head())
 
 # Environment and Actions for RL
-class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance 
+class Environment(gym.Env): # OpenAI Gym Environment Inheritance 
     def __init__(self, data):
-        super(SampleEnvironment, self).__init__()
+        super(Environment, self).__init__()
         self.data = data
         self.original_data = self.data.copy()
         self.iteration = 0
@@ -61,11 +61,25 @@ class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance
         # Observation space (Box) describes valid values that observations can take for consistent state representation  
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_row, self.num_col), dtype=np.float32) 
 
+        # Initialize Iterative Imputer
+        self.imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
+        self.imputed_data = self.imputer.fit_transform(self.data)
+
+        # Standardize data for outlier detection with One-Class SVM
+        self.scaler = StandardScaler().fit(self.imputed_data)
+        self.scaled_data = self.scaler.transform(self.imputed_data)
+        # Initialize One-Class SVM
+        self.ocsvm = OneClassSVM(nu=0.01) 
+        self.ocsvm.fit(self.scaled_data)
+
     # To reset dataset back to original values after each episode of training 
     def reset(self):
         self.data = self.original_data.copy() 
         self.iteration = 0 
         self.current_col = 0 
+        self.previous_na = self.data.isna().sum().sum()
+        self.imputed_data = self.imputer.fit_transform(self.data)
+        self.scaled_data = self.scaler.transform(self.imputed_data)
         return self.data.values.flatten() 
 
     # STEP FOR COMPLETENESS: To iterate over each row in every column and apply impute_value where NaN, and calculate_reward 
@@ -91,12 +105,32 @@ class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance
         
     # To impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' 
     def impute_value(self, row_i, column_i):
-        target_col = self.data.columns[column_i]
-        imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0) # Iterative Imputation with Random Forest Regressor as base model
-        imputed_data = imputer.fit_transform(self.data)
-        return imputed_data[row_i, column_i]
+        self.imputed_data = self.imputer.fit_transform(self.data) 
+        return self.imputed_data[row_i, column_i]
 
     # -- TO DO -- functions for validity and accuracy; replacement of bad inputs 
+    
+    # To replace inaccurate values (that are disproportionate and outliers compared to the rest of the data) with more fitting values 
+    def check_accuracy(self):
+        self.imputed_data = self.imputer.fit_transform(self.data)
+        self.scaled_data = self.scaler.transform(self.imputed_data)
+
+        # One-Class SVM for outlier detection
+        outliers_ocsvm = self.ocsvm.predict(self.scaled_data)
+        outlier_indices = np.where(outliers_ocsvm == -1)[0]
+
+        # Re-impute outliers
+        for index in outlier_indices:
+            row_index, col_index = divmod(index, self.num_col)
+            self.data.iloc[row_index, col_index] = self.impute_value(row_index, col_index)
+        
+        # Recalculate outliers after re-imputation
+        self.imputed_data = self.imputer.fit_transform(self.data)
+        self.scaled_data = self.scaler.transform(self.imputed_data)
+        outliers_ocsvm = self.ocsvm.predict(self.scaled_data)
+        ocsvm_penalty = np.sum(outliers_ocsvm == -1)  # Count remaining outliers
+
+        return ocsvm_penalty 
     
     # To calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
     def calculate_reward(self):
@@ -117,11 +151,12 @@ class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance
         #                validity_reward = -1
         
         # Accuracy
-        accuracy_reward = 0
+        outlier_penalty = self.check_accuracy()
         
         # Total reward 
-        total_reward = na_reduction 
+        total_reward = - (na_reduction + outlier_penalty)
         return total_reward
+
 
 class Agent: 
     def __init__(self, n_state, n_action): 
@@ -133,10 +168,11 @@ class Agent:
         self.n_action = n_action
         self.q_table = np.zeros((n_state, n_action))
 
+    # state not iterable in learn() - state_index needed
     def state_to_index(self, state): 
         return hash(tuple(state)) % self.n_state 
 
-    # Q learning: Temporal Difference Algorithm (Policy Evaluation)
+    # Q learning Algorithm
     def take_action(self, state):
         state_index = self.state_to_index(state)
         if np.random.rand() > self.epsilon: # Epsilon greedy strategy for current state
@@ -146,6 +182,8 @@ class Agent:
     def learn(self, state, next_state, action, reward, done): 
         state_index = self.state_to_index(state)
         action_converted = action.astype(int)
+
+        # Temporal Difference Learning for Policy Evaluation 
         best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
         td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - done) # (1 - finished) to ignore terminal rewards that are not relevant: 1 - True = 0
         td_error = abs(td_prediction - self.q_table[state_index, action_converted])
@@ -161,7 +199,7 @@ class Agent:
 
 
 if __name__ == "__main__":
-    env = SampleEnvironment(train_data)
+    env = Environment(train_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
     
     episodes = 50
@@ -181,5 +219,5 @@ if __name__ == "__main__":
             print(f"Episode: {episode + 1}, Iteration: {env.iteration}, Column: {env.current_col}, Reward: {reward}")
 
             if done: 
-                print(f"Episode: {episode+1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
+                print(f"Episode: {episode + 1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
                 break
