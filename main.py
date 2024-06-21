@@ -42,7 +42,6 @@ for column in text_column:
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0) 
 print(data.head())
 
-
 # Environment and Actions for RL
 class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance 
     def __init__(self, data):
@@ -54,6 +53,7 @@ class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance
         self.current_col = 0
         self.num_col = len(self.data.columns)
         self.num_row = len(self.data)
+        self.previous_na = self.data.isna().sum().sum()
 
         # Action space describes the possible values that actions can take (finite) 
         self.action_space = spaces.Discrete(self.num_row)
@@ -77,24 +77,22 @@ class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance
         self.iteration += 1
 
         # -- TO DO -- check if data entry is valid and accurate, if not apply functions   
-
+        
         # Move to next column 
         if self.iteration >= self.num_row:
             self.iteration = 0 
             self.current_col += 1
         
-        finished = self.current_col >= self.num_col 
+        done = self.current_col >= self.num_col 
         reward = self.calculate_reward()
-        if finished: 
+        if done: 
             self.finish = True 
-        return self.data.values.flatten(), reward, finished, {}
-
-    # To impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor'
-    def impute_value(self, row_i, column_i):
+        return self.data.values.flatten(), reward, done, {}
         
-        # Iterative Imputer with Random Forest Regressor as base model 
+    # To impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' 
+    def impute_value(self, row_i, column_i):
         target_col = self.data.columns[column_i]
-        imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
+        imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0) # Iterative Imputation with Random Forest Regressor as base model
         imputed_data = imputer.fit_transform(self.data)
         return imputed_data[row_i, column_i]
 
@@ -102,32 +100,32 @@ class SampleEnvironment(gym.Env): # OpenAI Gym Environment Inheritance
     
     # To calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
     def calculate_reward(self):
-        # Completeness: the less NaN values, the higher the reward obtained (proportional reduction: encourage the agent to focus on columns with a higher percentage of missing values)
-        previous_na = data.isnull().values.sum()
-        na_reduction = (self.data.isna().sum().sum() - previous_na) / previous_na
+        # Completeness: the less NaN values, the higher the reward obtained
+        current_na = self.data.isna().sum().sum()
+        na_reduction = self.previous_na - current_na
+        self.previous_na = current_na
         
         # Validity: check if imputed values are of allowed datatype in column  
-        imputed_values = [] # TO GET FROM FUNCTION  
-        for column in data.columns:
-            column_type = data[column].dtype
-            for value in data[column]:
-                if value in imputed_values:
-                    if isinstance(value, column_type): 
-                        validity_reward = -10
-                    else:
-                        validity_reward = -1
-
+        #imputed_values = self.check_format(row_i, column_i) # TO GET FROM FUNCTION  
+        #for column in data.columns:
+        #    column_type = data[column].dtype
+        #    for value in data[column]:
+        #        if value in imputed_values:
+        #            if isinstance(value, column_type): 
+        #                validity_reward = -10
+        #            else:
+        #                validity_reward = -1
+        
         # Accuracy
         accuracy_reward = 0
         
-        # Total reward
-        total_reward = na_reduction + validity_reward + accuracy_reward
+        # Total reward 
+        total_reward = na_reduction 
         return total_reward
-        
 
 class Agent: 
     def __init__(self, n_state, n_action): 
-        self.epsilon = 0.85 # exploration 
+        self.epsilon = 0.75 # exploration 
         self.min_epsilon = 0.01 # min exploration as exploitation becomes more important
         self.lr = 0.2 # learning rate: adjust Q values to converge towards optimal strategy 
         self.gamma = 0.99 # discounting rate (value of future rewards)
@@ -135,8 +133,8 @@ class Agent:
         self.n_action = n_action
         self.q_table = np.zeros((n_state, n_action))
 
-    def state_to_index(self, state):
-        return hash(tuple(state)) % self.n_state
+    def state_to_index(self, state): 
+        return hash(tuple(state)) % self.n_state 
 
     # Q learning: Temporal Difference Algorithm (Policy Evaluation)
     def take_action(self, state):
@@ -145,17 +143,17 @@ class Agent:
             return np.random.choice(self.n_action) # Exploration
         return np.argmax(self.q_table[state_index])
 
-    def learn(self, state, next_state, action, reward, finished): 
+    def learn(self, state, next_state, action, reward, done): 
         state_index = self.state_to_index(state)
         action_converted = action.astype(int)
         best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
-        td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - finished)
+        td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - done) # (1 - finished) to ignore terminal rewards that are not relevant: 1 - True = 0
         td_error = abs(td_prediction - self.q_table[state_index, action_converted])
         td_error_scalar = np.mean(td_error)
         self.q_table[state_index, action_converted] += (self.lr * td_error_scalar)
 
         # decrease exploration to encourage exploitation 
-        if finished: 
+        if done: 
             self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma)
 
     def update_state(self, state):
@@ -166,7 +164,7 @@ if __name__ == "__main__":
     env = SampleEnvironment(train_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
     
-    episodes = 100
+    episodes = 50
     for episode in range(episodes):
         state = env.reset()
         reward = env.calculate_reward()
@@ -175,11 +173,13 @@ if __name__ == "__main__":
         
         while True:
             action = agent.take_action(state)
-            next_state, reward, finished, _ = env.step(action)
-            agent.learn(state, action, reward, next_state, finished)
+            next_state, reward, done, _ = env.step(action)
+            agent.learn(state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
-            
-            if finished:
+
+            print(f"Episode: {episode + 1}, Iteration: {env.iteration}, Column: {env.current_col}, Reward: {reward}")
+
+            if done: 
                 print(f"Episode: {episode+1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
-                break 
+                break
