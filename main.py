@@ -226,8 +226,7 @@ class Agent:
         best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
         td_prediction = reward + self.gamma * self.q_table[next_state_index][best_next_action] * (1 - done) # TD prediction formula: reward + discounting rate * max Q(S(t+1), A), (1 - done) to ignore terminal rewards that are irrelevant
         td_error = td_prediction - self.q_table[state_index][action] # TD error formula: TD prediction - current Q(S, A) 
-        td_error_scalar = np.mean(td_error)
-        self.q_table[state_index][action] += self.lr * td_error_scalar # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
+        self.q_table[state_index][action] += self.lr * td_error[action] # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
 
         # decrease exploration to encourage exploitation with each episode 
         if done: 
