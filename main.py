@@ -40,6 +40,7 @@ train_data, test_data = train_test_split(data, test_size=0.25, random_state=0)
 print(data.head())
 
 
+
 ''' NOT NEEDED FOR NOW '''
 
 # Encode continuous text data: TF-IDF (Term Frequency-Inverse Document Frequency) - Converts text into a matrix of TF-IDF features (not tested yet)
@@ -52,6 +53,9 @@ for column in text_column:
     text_df = pd.DataFrame(text_vectors, columns=[f"{column}_{i}" for i in range(text_vectors.shape[1])]) # Each row in text_vectors corresponds to a row in the new DataFrame
     data = pd.concat([data.drop(columns=[text_column]), text_df], axis=1) # Replaces old text data with new vector 
     vectorizers[column] = vectorizer
+
+
+# In[2]:
 
 
 # Environment and Actions for RL
@@ -180,6 +184,7 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         return total_reward
 
 
+
 class Agent: 
     def __init__(self, n_state, n_action): 
         # values (especially epsilon and gamma) can be adjusted for best outcome (trial and error) 
@@ -189,37 +194,48 @@ class Agent:
         self.gamma = 0.8 # discounting rate (value of future rewards)
         self.n_state = n_state 
         self.n_action = n_action
-        self.q_table = np.zeros((n_state, n_action)) # initial Q table for learning (all zeros because no value is updated yet) 
-
-    # As state is not iterable in learn(); state_index needed (debugging function) 
-    def state_to_index(self, state): 
-        return hash(tuple(state)) % self.n_state 
-
+        self.q_table = {} # initial Q table for learning (all zeros because no value is updated yet) 
+        self.state_index_map = {}
+        self.next_state_index = 0
+            
+    def state_to_index(self, state):
+        # Convert state to tuple and map to a unique index
+        if isinstance(state, (list, tuple, np.ndarray)): # Check if state is iterable
+            state_tuple = tuple(state)
+        else:
+            state_tuple = (state,) # Convert to tuple with a single element if not iterable
+        if state_tuple not in self.state_index_map:
+            self.state_index_map[state_tuple] = self.next_state_index
+            self.q_table[self.next_state_index] = np.zeros(self.n_action)
+            self.next_state_index += 1
+        return self.state_index_map[state_tuple]
+        
     # Q learning Algorithm with epsilon greedy policy iteration 
     def take_action(self, state):
-        state_index = self.state_to_index(state)
+        state_index = self.state_to_index(state) # state indexing
         if np.random.rand() > self.epsilon: # epsilon greedy strategy for current state
-            return np.random.choice(self.n_action) # exploration
+            return np.random.randint(self.n_action) # exploration epsilon % of the time 
         return np.argmax(self.q_table[state_index]) # otherwise exploit accumulated knowledge: choose maximal value in Q table
 
     def learn(self, state, next_state, action, reward, done): 
-        state_index = self.state_to_index(state) # state index (debugging)  
-        action_converted = action.astype(int) # action formatting (debugging) 
+        state_index = self.state_to_index(state) # state indexing
+        next_state_index = self.state_to_index(next_state) # next state indexing 
+        action = int(action)
 
         # Temporal Difference Learning for Policy Evaluation 
         best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
-        td_prediction = reward + self.gamma * np.argmax(self.q_table[next_state, best_next_action]) * (1 - done) # TD prediction formula: reward + discounting rate * max Q(S(t+1), A)
-        # (1 - done) to ignore terminal rewards that are not relevant: 1 - True = 0
-        td_error = td_prediction - self.q_table[state_index, action_converted] # TD error formula: TD prediction - current Q(S, A) 
-        td_error_scalar = np.mean(td_error) 
-        self.q_table[state_index, action_converted] += (self.lr * td_error_scalar) # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
+        td_prediction = reward + self.gamma * self.q_table[next_state_index][best_next_action] * (1 - done) # TD prediction formula: reward + discounting rate * max Q(S(t+1), A), (1 - done) to ignore terminal rewards that are irrelevant
+        td_error = td_prediction - self.q_table[state_index][action] # TD error formula: TD prediction - current Q(S, A) 
+        td_error_scalar = np.mean(td_error)
+        self.q_table[state_index][action] += self.lr * td_error_scalar # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
 
-        # decrease exploration to encourage exploitation 
+        # decrease exploration to encourage exploitation with each episode 
         if done: 
             self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma) # choose max value between epsilon * discounting rate and 0.01 (convergence towards exploitation)
 
     def update_state(self, state):
-        self.current_state = self.state_to_index(state) # state index updated (debugging) 
+        self.current_state = self.state_to_index(state) # state index updated 
+
 
 
 if __name__ == "__main__":
