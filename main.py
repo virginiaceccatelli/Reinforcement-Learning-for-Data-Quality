@@ -123,16 +123,17 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.data.replace(-9999, np.nan, inplace=True)
         imputed_data = self.imputer.fit_transform(self.data)
         imputed_dataframe = pd.DataFrame(imputed_data, columns=self.data.columns)
+
+        # -- TO DO -- round imputed value to closest whole number 
+        return imputed_dataframe
         
-        return imputed_dataframe.round(0)
-        
-    # -- TO DO -- function for validity; replacement of impossible inputs 
+    # -- TO DO -- function for validity; replacement of impossible inputs (data types) 
 
     # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
     def check_accuracy(self):
         # Impute missing values first and then standardise data 
         self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns) # impute using the trained imputer without fitting again
-        self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns) # Maintain column names
+        self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns) # maintain column names
 
         # One-Class SVM for outlier detection
         outliers_ocsvm = self.ocsvm.fit_predict(self.scaled_data)
@@ -143,7 +144,7 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
                 row_index, col_index = divmod(index, self.num_col)
                 self.data.iloc[row_index, col_index] = self.imputed_data.iloc[row_index, col_index] # replaces value of outlier with predicted value 
 
-        # Inverse transform the scaled data back to original scale after replacing outliers
+        # Inverse transform scaled data back to original scale
         self.data[:] = self.scaler.inverse_transform(self.scaled_data)
 
     # Calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
@@ -167,7 +168,7 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         # Accuracy: the less outliers, the smaller the penalty 
         self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns)
         self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns)
-        outliers_ocsvm = self.ocsvm.predict(self.scaled_data)
+        outliers_ocsvm = self.ocsvm.predict(self.scaled_data) 
         ocsvm_count = np.sum(outliers_ocsvm == -1) # count remaining outliers after each episode and calculate penalty (negative sum of remaining outliers) 
         if ocsvm_count == 0: # if no outliers then reward is 1, else reward is negative sum 
             outlier_penalty = 1
@@ -181,42 +182,44 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
 
 class Agent: 
     def __init__(self, n_state, n_action): 
-        self.epsilon = 0.75 # exploration 
+        # values (especially epsilon and gamma) can be adjusted for best outcome (trial and error) 
+        self.epsilon = 0.7 # exploration 
         self.min_epsilon = 0.01 # min exploration as exploitation becomes more important
         self.lr = 0.2 # learning rate: adjust Q values to converge towards optimal strategy 
-        self.gamma = 0.99 # discounting rate (value of future rewards)
+        self.gamma = 0.8 # discounting rate (value of future rewards)
         self.n_state = n_state 
         self.n_action = n_action
         self.q_table = np.zeros((n_state, n_action)) # initial Q table for learning (all zeros because no value is updated yet) 
 
-    # state not iterable in learn(); state_index needed
+    # As state is not iterable in learn(); state_index needed (debugging function) 
     def state_to_index(self, state): 
         return hash(tuple(state)) % self.n_state 
 
-    # Q learning Algorithm
+    # Q learning Algorithm with epsilon greedy policy iteration 
     def take_action(self, state):
         state_index = self.state_to_index(state)
-        if np.random.rand() > self.epsilon: # Epsilon greedy strategy for current state
-            return np.random.choice(self.n_action) # Exploration
-        return np.argmax(self.q_table[state_index])
+        if np.random.rand() > self.epsilon: # epsilon greedy strategy for current state
+            return np.random.choice(self.n_action) # exploration
+        return np.argmax(self.q_table[state_index]) # otherwise exploit accumulated knowledge: choose maximal value in Q table
 
     def learn(self, state, next_state, action, reward, done): 
-        state_index = self.state_to_index(state)
-        action_converted = action.astype(int)
+        state_index = self.state_to_index(state) # state index (debugging)  
+        action_converted = action.astype(int) # action formatting (debugging) 
 
         # Temporal Difference Learning for Policy Evaluation 
         best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
-        td_prediction = reward + self.gamma * self.q_table[next_state, best_next_action] * (1 - done) # (1 - done) to ignore terminal rewards that are not relevant: 1 - True = 0
-        td_error = abs(td_prediction - self.q_table[state_index, action_converted])
-        td_error_scalar = np.mean(td_error)
-        self.q_table[state_index, action_converted] += (self.lr * td_error_scalar)
+        td_prediction = reward + self.gamma * np.argmax(self.q_table[next_state, best_next_action]) * (1 - done) # TD prediction formula: reward + discounting rate * max Q(S(t+1), A)
+        # (1 - done) to ignore terminal rewards that are not relevant: 1 - True = 0
+        td_error = td_prediction - self.q_table[state_index, action_converted] # TD error formula: TD prediction - current Q(S, A) 
+        td_error_scalar = np.mean(td_error) 
+        self.q_table[state_index, action_converted] += (self.lr * td_error_scalar) # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
 
         # decrease exploration to encourage exploitation 
         if done: 
-            self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma)
+            self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma) # choose max value between epsilon * discounting rate and 0.01 (convergence towards exploitation)
 
     def update_state(self, state):
-        self.current_state = self.state_to_index(state)
+        self.current_state = self.state_to_index(state) # state index updated (debugging) 
 
 
 if __name__ == "__main__":
@@ -233,7 +236,6 @@ if __name__ == "__main__":
         while True:
             action = agent.take_action(state)
             next_state, reward, done, _ = env.step(action)
-            print(env.scaled_data)
             agent.learn(state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
