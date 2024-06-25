@@ -24,7 +24,6 @@ print(data.head())
 
 # Encoding of categorical variables as numeric: decode after ML imputation to get original dataset 
 label_encoders = {}
-categorical_columns = []
 
 for column in data.select_dtypes(include=['object']).columns:
     if data[column].nunique() <= 20: 
@@ -35,7 +34,6 @@ for column in data.select_dtypes(include=['object']).columns:
             index=series[series.notnull()].index
         )
         label_encoders[column] = label_encoder
-        categorical_columns.append(column)
 
 # Train 75%, Test 25%: after training, use unseen data in test subset to estimate algorithm accuracy and validity 
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0)
@@ -58,7 +56,7 @@ for column in text_column:
 
 # Environment and Actions for RL
 class Environment(gym.Env): # OpenAI Gym Environment Inheritance 
-    def __init__(self, data, categorical_columns):
+    def __init__(self, data):
         super(Environment, self).__init__()
         self.data = data
         self.original_data = self.data.copy()
@@ -68,7 +66,6 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.num_col = len(self.data.columns)
         self.num_row = len(self.data)
         self.previous_na = self.data.isna().sum().sum()
-        self.categorical_columns = categorical_columns
 
         # Action space describes the possible values that actions can take (finite) 
         self.action_space = spaces.Discrete(self.num_row)
@@ -101,11 +98,14 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         row_i = action 
         column_i = self.current_col
         if self.data.iloc[row_i, column_i] == -9999 or pd.isna(self.data.iloc[row_i, column_i]): # Look for NaN values (or that were replaced with -9999)
-            self.data.iloc[row_i, column_i] = self.impute_value(row_i, column_i) 
+            try:
+                self.data.iloc[row_i, column_i] = self.impute_value(self.data.iloc[row_i, column_i])
+            except TypeError or ValueError: 
+                pass
         self.check_accuracy()
         self.iteration += 1
 
-        # -- TO DO -- check if data entry is valid, if not apply functions   
+        # -- TO DO -- check if data entry is valid, if not apply function 
         
         # Move to next column 
         if self.iteration >= self.num_row:
@@ -120,31 +120,31 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         
     # COMPLETENESS: Impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' 
     def impute_value(self, row_i, column_i):        
-        target_col = data.columns[column_i]
-
+        self.data.replace(-9999, np.nan, inplace=True)
         imputed_data = self.imputer.fit_transform(self.data)
-        imputed_value = np.round(imputed_data[row_i, column_i])
-
-        return imputed_value
+        #imputed_value = np.round(imputed_data[row_i, column_i])
+        
+        return pd.DataFrame(imputed_data, columns=self.data.columns)
         
     # -- TO DO -- function for validity; replacement of impossible inputs 
 
     # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
     def check_accuracy(self):
         # Impute missing values first and then standardise data 
-        self.imputed_data = self.imputer.transform(self.data) # impute using the trained imputer without fitting again
+        self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns) # impute using the trained imputer without fitting again
         self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns) # Maintain column names
 
         # One-Class SVM for outlier detection
         outliers_ocsvm = self.ocsvm.fit_predict(self.scaled_data)
         outliers = np.where(outliers_ocsvm == -1)[0] # finds outliers
 
-        for index in outliers: # finds indices for outliers 
-            row_index = index // self.num_col
-            col_index = index % self.num_col
+        for index, outlier_pred in enumerate(outliers_ocsvm):
+            if outlier_pred == -1: # Check if outlier
+                row_index, col_index = divmod(index, self.num_col)
+                self.data.iloc[row_index, col_index] = self.imputed_data.iloc[row_index, col_index] # replaces value of outlier with predicted value 
 
-            imputed_value = self.imputed_data[row_index, col_index] 
-            self.data.iloc[row_index, col_index] = imputed_value # replaces value of outlier with predicted value 
+        # Inverse transform the scaled data back to original scale after replacing outliers
+        self.data[:] = self.scaler.inverse_transform(self.scaled_data)
 
     # Calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
     def calculate_reward(self):
@@ -165,8 +165,8 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         #                validity_reward = -1
         
         # Accuracy: the less outliers, the smaller the penalty 
-        self.imputed_data = self.imputer.fit_transform(self.data)
-        self.scaled_data = self.scaler.transform(self.imputed_data)
+        self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns)
+        self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns)
         outliers_ocsvm = self.ocsvm.predict(self.scaled_data)
         ocsvm_count = np.sum(outliers_ocsvm == -1) # count remaining outliers after each episode and calculate penalty (negative sum of remaining outliers) 
         if ocsvm_count == 0: # if no outliers then reward is 1, else reward is negative sum 
@@ -220,10 +220,10 @@ class Agent:
 
 
 if __name__ == "__main__":
-    env = Environment(train_data, categorical_columns)
+    env = Environment(train_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
     
-    episodes = 50
+    episodes = 20
     for episode in range(episodes):
         state = env.reset()
         reward = env.calculate_reward()
@@ -237,9 +237,11 @@ if __name__ == "__main__":
             agent.learn(state, action, reward, next_state, done)
             state = next_state
             total_reward += reward
+            print(env.data)
 
             print(f"Episode: {episode + 1}, Iteration: {env.iteration}, Column: {env.current_col}, Reward: {reward}")
 
             if done: 
                 print(f"Episode: {episode + 1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
+                print(env.data)
                 break
