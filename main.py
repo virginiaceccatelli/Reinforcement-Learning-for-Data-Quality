@@ -122,9 +122,9 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
     def impute_value(self, row_i, column_i):        
         self.data.replace(-9999, np.nan, inplace=True)
         imputed_data = self.imputer.fit_transform(self.data)
-        #imputed_value = np.round(imputed_data[row_i, column_i])
+        imputed_dataframe = pd.DataFrame(imputed_data, columns=self.data.columns)
         
-        return pd.DataFrame(imputed_data, columns=self.data.columns)
+        return imputed_dataframe.round(0)
         
     # -- TO DO -- function for validity; replacement of impossible inputs 
 
