@@ -15,7 +15,7 @@ from sklearn.svm import OneClassSVM
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_klein.xlsx"
+file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_df.xlsm"
 data = pd.read_excel(file_path)
 
 # Data formatting (NA to NaN) 
@@ -38,24 +38,6 @@ for column in data.select_dtypes(include=['object']).columns:
 # Train 75%, Test 25%: after training, use unseen data in test subset to estimate algorithm accuracy and validity 
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0)
 print(data.head())
-
-
-
-''' NOT NEEDED FOR NOW '''
-
-# Encode continuous text data: TF-IDF (Term Frequency-Inverse Document Frequency) - Converts text into a matrix of TF-IDF features (not tested yet)
-vectorizer = {}
-text_column = text_columns = [column for column in data.select_dtypes(include=['object']).columns if data[column].nunique() > 20]
-
-for column in text_column:
-    text_vectors = vectorizer.fit_transform(data[text_column].astype(str).fillna('')).toarray() # Numpy array: each row corresponds to a row from the original DataFrame and each column corresponds to a TF-IDF feature
-    # The list comprehension iterates over the range of column indices and creates unique names by concatenating the original column name and the index
-    text_df = pd.DataFrame(text_vectors, columns=[f"{column}_{i}" for i in range(text_vectors.shape[1])]) # Each row in text_vectors corresponds to a row in the new DataFrame
-    data = pd.concat([data.drop(columns=[text_column]), text_df], axis=1) # Replaces old text data with new vector 
-    vectorizers[column] = vectorizer
-
-
-# In[2]:
 
 
 # Environment and Actions for RL
@@ -103,13 +85,15 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         column_i = self.current_col
         if self.data.iloc[row_i, column_i] == -9999 or pd.isna(self.data.iloc[row_i, column_i]): # Look for NaN values (or that were replaced with -9999)
             try:
-                self.data.iloc[row_i, column_i] = self.impute_value(self.data.iloc[row_i, column_i])
-            except TypeError or ValueError: 
+                imputed_dataframe = self.impute_value()
+                self.data.iloc[row_i, column_i] = imputed_dataframe.iloc[row_i, column_i]
+            except (TypeError, ValueError) as e:
+                print(f"Error: {e}")
                 pass
+                
+        # -- TO DO -- check if data entry is valid, if not apply function 
         self.check_accuracy()
         self.iteration += 1
-
-        # -- TO DO -- check if data entry is valid, if not apply function 
         
         # Move to next column 
         if self.iteration >= self.num_row:
@@ -117,20 +101,22 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
             self.current_col += 1
         
         done = self.current_col >= self.num_col 
-        reward = self.calculate_reward()
         if done: 
             self.finish = True 
+            
+        reward = self.calculate_reward()
+        
         return self.data.values.flatten(), reward, done, {}
         
     # COMPLETENESS: Impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' 
-    def impute_value(self, row_i, column_i):        
+    def impute_value(self):        
         self.data.replace(-9999, np.nan, inplace=True)
-        imputed_data = self.imputer.fit_transform(self.data)
+        imputed_data = np.round(self.imputer.fit_transform(self.data))
         imputed_dataframe = pd.DataFrame(imputed_data, columns=self.data.columns)
 
         # -- TO DO -- round imputed value to closest whole number 
         return imputed_dataframe
-        
+    
     # -- TO DO -- function for validity; replacement of impossible inputs (data types) 
 
     # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
@@ -143,87 +129,80 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         outliers_ocsvm = self.ocsvm.fit_predict(self.scaled_data)
         outliers = np.where(outliers_ocsvm == -1)[0] # finds outliers
 
-        for index, outlier_pred in enumerate(outliers_ocsvm):
-            if outlier_pred == -1: # Check if outlier
-                row_index, col_index = divmod(index, self.num_col)
+        for index in outliers:
+            row_index, col_index = divmod(index, self.num_col)
+            if pd.isna(self.data.iloc[row_index, col_index]) or self.data.iloc[row_index, col_index] == -9999: # re-impute if it's still NaN or -9999
                 self.data.iloc[row_index, col_index] = self.imputed_data.iloc[row_index, col_index] # replaces value of outlier with predicted value 
 
-        # Inverse transform scaled data back to original scale
+        # Transform scaled data back to original scale
         self.data[:] = self.scaler.inverse_transform(self.scaled_data)
 
     # Calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
     def calculate_reward(self):
         # Completeness: the less NaN values remaining, the higher the reward obtained
-        current_na = self.data.isna().sum().sum()
-        na_reduction = self.previous_na - current_na # positive reward for reduction of NaN 
-        self.previous_na = current_na # previous_na constantly updated to encourage reduction of multiple NaN values per episode 
-        
-        # Validity: check if imputed values are of allowed datatype in column  
-        #imputed_values = self.check_format(row_i, column_i) # TO GET FROM FUNCTION  
-        #for column in data.columns:
-        #    column_type = data[column].dtype
-        #    for value in data[column]:
-        #        if value in imputed_values:
-        #            if isinstance(value, column_type): 
-        #                validity_reward = -10
-        #            else:
-        #                validity_reward = -1
+        if self.current_col >= self.num_col: 
+            na_reward = -self.data.isna().sum().sum()
+        else:
+            current_na = self.data.iloc[:, self.current_col].isna().sum()
+            if current_na > 0:
+                na_reward = -current_na
+            else:
+                na_reward = 1
         
         # Accuracy: the less outliers, the smaller the penalty 
         self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns)
         self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns)
         outliers_ocsvm = self.ocsvm.predict(self.scaled_data) 
-        ocsvm_count = np.sum(outliers_ocsvm == -1) # count remaining outliers after each episode and calculate penalty (negative sum of remaining outliers) 
-        if ocsvm_count == 0: # if no outliers then reward is 1, else reward is negative sum 
-            outlier_penalty = 1
-        else:
-            outlier_penalty = - ocsvm_count 
+        ocsvm_count = np.sum(outliers_ocsvm == -1) # count remaining outliers after each episode and calculate penalty 
+        if ocsvm_count == 0: # if no outliers then reward is 1, else reward is negative sum of remaining outliers
+            outlier_reward = 1
+        elif ocsvm_count != 0:
+            outlier_reward = - ocsvm_count
         
         # Total reward 
-        total_reward = na_reduction + outlier_penalty
-        return total_reward
-
+        full_reward = na_reward + outlier_reward
+        return full_reward
 
 
 class Agent: 
     def __init__(self, n_state, n_action): 
         # values (especially epsilon and gamma) can be adjusted for best outcome (trial and error) 
-        self.epsilon = 0.7 # exploration 
+        self.epsilon = 0.8 # exploration 
         self.min_epsilon = 0.01 # min exploration as exploitation becomes more important
         self.lr = 0.2 # learning rate: adjust Q values to converge towards optimal strategy 
         self.gamma = 0.8 # discounting rate (value of future rewards)
         self.n_state = n_state 
         self.n_action = n_action
-        self.q_table = {} # initial Q table for learning (all zeros because no value is updated yet) 
+        self.q_table = {} # initial Q table for learning (initially all zeros as there are no state-action rewards yet) 
         self.state_index_map = {}
         self.next_state_index = 0
             
     def state_to_index(self, state):
         # Convert state to tuple and map to a unique index
-        if isinstance(state, (list, tuple, np.ndarray)): # Check if state is iterable
+        if isinstance(state, (list, tuple, np.ndarray)): # Check if state is iterable: if it is then it is converted to a tuple 
             state_tuple = tuple(state)
         else:
-            state_tuple = (state,) # Convert to tuple with a single element if not iterable
-        if state_tuple not in self.state_index_map:
+            state_tuple = (state,) # if it is not then it is converted to a tuple with single instance  
+        if state_tuple not in self.state_index_map: # if the state tuple is not already in the state index map dictionary it is added
             self.state_index_map[state_tuple] = self.next_state_index
-            self.q_table[self.next_state_index] = np.zeros(self.n_action)
-            self.next_state_index += 1
+            self.q_table[self.next_state_index] = np.zeros(self.n_action) # the Q table is updated 
+            self.next_state_index += 1 # index count is updated 
         return self.state_index_map[state_tuple]
         
     # Q learning Algorithm with epsilon greedy policy iteration 
     def take_action(self, state):
         state_index = self.state_to_index(state) # state indexing
-        if np.random.rand() > self.epsilon: # epsilon greedy strategy for current state
+        if np.random.rand() <= self.epsilon: # epsilon greedy strategy for current state
             return np.random.randint(self.n_action) # exploration epsilon % of the time 
         return np.argmax(self.q_table[state_index]) # otherwise exploit accumulated knowledge: choose maximal value in Q table
 
     def learn(self, state, next_state, action, reward, done): 
         state_index = self.state_to_index(state) # state indexing
         next_state_index = self.state_to_index(next_state) # next state indexing 
-        action = int(action)
+        action = int(action) # convert action to integer 
 
         # Temporal Difference Learning for Policy Evaluation 
-        best_next_action = np.argmax(self.q_table[next_state]) # Greedy strategy for future state
+        best_next_action = np.argmax(self.q_table[next_state_index]) # Greedy strategy for future state
         td_prediction = reward + self.gamma * self.q_table[next_state_index][best_next_action] * (1 - done) # TD prediction formula: reward + discounting rate * max Q(S(t+1), A), (1 - done) to ignore terminal rewards that are irrelevant
         td_error = td_prediction - self.q_table[state_index][action] # TD error formula: TD prediction - current Q(S, A) 
         self.q_table[state_index][action] += self.lr * td_error[action] # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
@@ -234,8 +213,6 @@ class Agent:
 
     def update_state(self, state):
         self.current_state = self.state_to_index(state) # state index updated 
-
-
 
 if __name__ == "__main__":
     env = Environment(train_data)
@@ -251,7 +228,7 @@ if __name__ == "__main__":
         while True:
             action = agent.take_action(state)
             next_state, reward, done, _ = env.step(action)
-            agent.learn(state, action, reward, next_state, done)
+            agent.learn(state, action, reward, next_state, done) # SARS -> Q learning 
             state = next_state
             total_reward += reward
             print(env.data)
