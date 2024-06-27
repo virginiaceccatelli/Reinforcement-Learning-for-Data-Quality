@@ -121,8 +121,6 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
 
     # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
     def check_accuracy(self):
-        # Impute missing values first and then standardise data 
-        self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns) # impute using the trained imputer without fitting again
         self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns) # maintain column names
 
         # One-Class SVM for outlier detection
