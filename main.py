@@ -1,6 +1,7 @@
 import pandas as pd 
 import numpy as np
 import seaborn as sns 
+import matplotlib.pyplot as plt
 import random
 import gym
 from gym import spaces 
@@ -15,7 +16,7 @@ from sklearn.svm import OneClassSVM
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_df.xlsm"
+file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_klein.xlsx"
 data = pd.read_excel(file_path)
 
 # Data formatting (NA to NaN) 
@@ -51,6 +52,8 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.current_col = 0
         self.num_col = len(self.data.columns)
         self.num_row = len(self.data)
+        self.inaccurate_numbers = []
+        self.invalid_numbers = []
         self.previous_na = self.data.isna().sum().sum()
 
         # Action space describes the possible values that actions can take (finite) 
@@ -60,13 +63,13 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_row, self.num_col), dtype=np.float32) 
 
         # Standardizing data for One-Class SVM outlier detection (accuracy) 
-        self.scaler = StandardScaler().fit(self.data.fillna(-9999)) # OCSVM cannot handle NaN values; they have to be transformed to out-of-bound number
+        self.scaler = StandardScaler().fit(self.data.fillna(-9999)) # Standard Scaler cannot handle NaN values; they have to be transformed to out-of-bound number
         self.scaled_data = pd.DataFrame(self.scaler.transform(self.data.fillna(-9999)), columns=self.data.columns) # transform data while maintaining dataframe structure and column names
 
-        self.ocsvm = OneClassSVM(nu=0.01) # nu: upper bound on the fraction of margin errors and support vectors
+        self.ocsvm = OneClassSVM(nu=0.01) # nu: upper bound on the fraction of margin errors and support vectors: at most 1% misinterpreted values
         self.ocsvm.fit(self.scaled_data)
         
-        # Initializing IterativeImputer once and reuse
+        # Initializing IterativeImputer 
         self.imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
 
     # Reset dataset back to original values after each episode of training 
@@ -87,12 +90,11 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
             try:
                 imputed_dataframe = self.impute_value()
                 self.data.iloc[row_i, column_i] = imputed_dataframe.iloc[row_i, column_i]
-            except (TypeError, ValueError) as e:
-                print(f"Error: {e}")
+            except (TypeError, ValueError):
                 pass
                 
-        # -- TO DO -- check if data entry is valid, if not apply function 
-        self.check_accuracy()
+        self.check_accuracy() # check if value is accurate (outliers)
+        self.data.iloc[row_i, column_i] = np.round(self.data.iloc[row_i, column_i]) # round values to next closest number
         self.iteration += 1
         
         # Move to next column 
@@ -102,6 +104,7 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         
         done = self.current_col >= self.num_col 
         if done: 
+            self.data.convert_dtypes() # changes datatypes in dataframe to best fitting datatypes 
             self.finish = True 
             
         reward = self.calculate_reward()
@@ -111,26 +114,31 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
     # COMPLETENESS: Impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' 
     def impute_value(self):        
         self.data.replace(-9999, np.nan, inplace=True)
-        imputed_data = np.round(self.imputer.fit_transform(self.data))
+        imputed_data = self.imputer.fit_transform(self.data)
         imputed_dataframe = pd.DataFrame(imputed_data, columns=self.data.columns)
 
-        # -- TO DO -- round imputed value to closest whole number 
         return imputed_dataframe
-    
-    # -- TO DO -- function for validity; replacement of impossible inputs (data types) 
+
+    # VALIDITY: extract majority type in column and check if value row_i, column_i is equivalent; if not it is appended to list invalid_numbers 
+    def check_validity(self, row_i, column_i): 
+        majority_dtype = self.data[column_i].dtypes
+        if self.data[row_i, column_i].dtype != majority_dtype: 
+            self.invalid_numbers.append(value)                    
 
     # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
-    def check_accuracy(self):
+    def check_accuracy(self): 
         self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns) # maintain column names
 
         # One-Class SVM for outlier detection
         outliers_ocsvm = self.ocsvm.fit_predict(self.scaled_data)
         outliers = np.where(outliers_ocsvm == -1)[0] # finds outliers
 
+        # -- TO DO -- within given boundary (very obvious outliers), values are either changed through best fit prediction or appended to inaccurate_numbers list
         for index in outliers:
             row_index, col_index = divmod(index, self.num_col)
             if pd.isna(self.data.iloc[row_index, col_index]) or self.data.iloc[row_index, col_index] == -9999: # re-impute if it's still NaN or -9999
-                self.data.iloc[row_index, col_index] = self.imputed_data.iloc[row_index, col_index] # replaces value of outlier with predicted value 
+                self.inaccurate_numbers.append(self.data.iloc[row_index, col_index])
+                # self.data.iloc[row_index, col_index] = self.imputed_data.iloc[row_index, col_index] # replaces value of outlier with predicted value 
 
         # Transform scaled data back to original scale
         self.data[:] = self.scaler.inverse_transform(self.scaled_data)
@@ -155,12 +163,13 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         if ocsvm_count == 0: # if no outliers then reward is 1, else reward is negative sum of remaining outliers
             outlier_reward = 1
         elif ocsvm_count != 0:
-            outlier_reward = - ocsvm_count
+            outlier_reward = -ocsvm_count
+
+        # Validity: 
         
         # Total reward 
         full_reward = na_reward + outlier_reward
         return full_reward
-
 
 class Agent: 
     def __init__(self, n_state, n_action): 
@@ -212,6 +221,7 @@ class Agent:
     def update_state(self, state):
         self.current_state = self.state_to_index(state) # state index updated 
 
+
 if __name__ == "__main__":
     env = Environment(train_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
@@ -232,6 +242,12 @@ if __name__ == "__main__":
             print(env.data)
 
             print(f"Episode: {episode + 1}, Iteration: {env.iteration}, Column: {env.current_col}, Reward: {reward}")
+
+            if done: 
+                print(f"Episode: {episode + 1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}, dtype: {env.data.dtypes}")
+                np.round(env.data)
+                print(env.data)
+                break
 
             if done: 
                 print(f"Episode: {episode + 1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
