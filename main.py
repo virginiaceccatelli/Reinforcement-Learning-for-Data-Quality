@@ -151,16 +151,26 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.ocsvm.set_params(nu=0.01)
         outliers_ocsvm = self.ocsvm.fit_predict(self.scaled_data)
         outliers = np.where(outliers_ocsvm == -1)[0] # finds outliers
-
         self.data[:] = self.scaler.inverse_transform(self.scaled_data) # transform scaled data back to original scale
-
+        
         for index in outliers:
-            row_index, col_index = divmod(index, self.num_col) # store index and previous value of outliers in list 
-            self.inaccurate_numbers.append({ 
-                'row': row_index,
-                'col': col_index,
-                'previous_value': self.data.iloc[row_index, col_index]
-            })
+            row_index = index // self.data.shape[1] # calculate row index 
+            col_index = index % self.data.shape[1]
+
+            if col_index == self.current_col: 
+                for entry in self.inaccurate_numbers:
+                    if entry['row'] == row_index and entry['col'] == col_index:
+                        self.inaccurate_numbers = [
+                            entry for entry in self.inaccurate_numbers
+                            if not (entry['row'] == row_index and entry['col'] == col_index)
+                        ]
+            
+                self.inaccurate_numbers.append({ 
+                    'row': row_index,
+                    'col': col_index,
+                    'previous_value': self.data.iloc[row_index, col_index]
+                })
+                
         # -- TO DO (eventually) -- within given boundary (very obvious outliers), values are either changed through best fit prediction or appended to inaccurate_numbers list
         # IDEA: increase nu parameter linear to exploration factor epsilon (nu increases proportional to exploration rate, so that the agent can learn the optimal nu parameter) 
         
