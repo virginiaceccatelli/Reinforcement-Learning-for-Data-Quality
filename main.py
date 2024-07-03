@@ -10,9 +10,8 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.neighbors import KNeighborsClassifier 
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import OrdinalEncoder
 from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import OneClassSVM
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -29,7 +28,7 @@ invalid_indices_dict = {}
 for col_idx, column in enumerate(data.columns):
     if pd.api.types.is_numeric_dtype(data[column]):
         data[column] = pd.to_numeric(data[column], errors='coerce')  # convert numeric columns to float, coerce non-numeric to NaN
-        if ' age ' in column.lower():
+        if ' age ' in column.lower(): 
             data[column] = np.where((data[column] >= 0) & (data[column] <= 100), data[column], np.nan) # set invalid values for age as NaN
     else:
         for row_idx, value in data[column].items():
@@ -47,23 +46,22 @@ for col_idx, column in enumerate(data.columns):
                 pass
 print(data) 
 # Encoding of categorical variables as numeric: decode after ML imputation to get original dataset 
-label_encoders = {}
-
+ordinal_encoders = {}
 for column in data.select_dtypes(include=['object']).columns:
-    if data[column].nunique() <= 20: 
-        series = data[column]
-        label_encoder = LabelEncoder()
-        data[column] = pd.Series(
-            label_encoder.fit_transform(series[series.notnull()]),
-            index=series[series.notnull()].index
-        )
-        label_encoders[column] = label_encoder
+    series = data[column]
+    indices_to_encode = series.notna()
+    series_filled = series.fillna('missing')
+    ordinal_encoder = OrdinalEncoder()
+    encoded_values = ordinal_encoder.fit_transform(series_filled[indices_to_encode].values.reshape(-1, 1)).flatten()
+    series_copy = series.copy()
+    series_copy.loc[indices_to_encode] = encoded_values
+    data[column] = series_copy
+    ordinal_encoders[column] = ordinal_encoder
 
 # Train 75%, Test 25%: after training, use unseen data in test subset to estimate algorithm accuracy and validity 
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0)
 print(data)
-print(invalid_indices_dict) 
-
+print(invalid_indices_dict)
 
 
 # Environment and Actions for RL
@@ -130,7 +128,6 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         done = self.current_col >= self.num_col 
         if done: 
             self.finish = True 
-            
         reward = self.calculate_reward()
         
         return self.data.values.flatten(), reward, done, {}
@@ -187,14 +184,16 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
                 na_reward = 1
         
         # Accuracy: the less outliers, the smaller the penalty 
+        if self.inaccurate_numbers.sum() >= 0:
+            outlier_reward += 1
         self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns)
         self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns)
         outliers_ocsvm = self.ocsvm.predict(self.scaled_data) 
         ocsvm_count = np.sum(outliers_ocsvm == -1) # count remaining outliers after each episode and calculate penalty 
         if ocsvm_count == 0: # if no outliers then reward is 1, else reward is negative sum of remaining outliers
-            outlier_reward = 1
+            outlier_reward += 1
         elif ocsvm_count != 0:
-            outlier_reward = -ocsvm_count
+            outlier_reward += -ocsvm_count
 
         # Total reward 
         full_reward = na_reward + outlier_reward
@@ -256,7 +255,7 @@ if __name__ == "__main__":
     env = Environment(train_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
     
-    episodes = 20
+    episodes = 1
     for episode in range(episodes):
         state = env.reset()
         reward = env.calculate_reward()
@@ -277,3 +276,13 @@ if __name__ == "__main__":
                 print(f"Invalid Numbers: {invalid_indices_dict}, Inaccurate Numbers: {env.inaccurate_numbers}")
                 print(env.data)
                 break
+    
+    np.round(env.data)
+    decoded_data = env.data.copy().to_numpy()
+    for column in ordinal_encoders:
+        col_idx = env.data.columns.get_loc(column)
+        ordinal_encoder = ordinal_encoders[column]
+        decoded_values = ordinal_encoder.inverse_transform(decoded_data[:, col_idx].astype(int).reshape(-1, 1)).flatten()
+        decoded_data[:, col_idx] = decoded_values
+    decoded_data = pd.DataFrame(decoded_data, columns=env.data.columns)
+    print(decoded_data)
