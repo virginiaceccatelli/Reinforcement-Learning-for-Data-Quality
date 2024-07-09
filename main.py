@@ -8,6 +8,7 @@ import gym
 from gym import spaces 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.neighbors import KNeighborsClassifier 
+from sklearn import metrics
 from sklearn.experimental import enable_iterative_imputer
 from sklearn.impute import IterativeImputer
 from sklearn.preprocessing import OrdinalEncoder
@@ -23,13 +24,26 @@ data = pd.read_excel(file_path)
 data.replace(["NA", "", "null", "Na", "N/A", "na"], np.nan, inplace=True)
 print(data)
 
-# VALIDITY: invalid values are stored in dictionary 
+# VALIDITY: invalid values are stored in dictionary - DATA TYPES 
 invalid_indices_dict = {}
-for col_idx, column in enumerate(data.columns):
+for column in data.columns:
+    original_nan_mask = data[column].isna()
     if pd.api.types.is_numeric_dtype(data[column]):
-        data[column] = pd.to_numeric(data[column], errors='coerce')  # convert numeric columns to float, coerce non-numeric to NaN
-        if ' age ' in column.lower(): 
-            data[column] = np.where((data[column] >= 0) & (data[column] <= 100), data[column], np.nan) # set invalid values for age as NaN
+        coerced_column = pd.to_numeric(data[column], errors='coerce')  # convert numeric columns to float, coerce non-numeric to NaN
+        coerced_nan_mask = coerced_column.isna() # create mask for original nan values and updated after errors = coerce 
+        coerced_values_mask = coerced_nan_mask & ~original_nan_mask # extract coerced nan values 
+        invalid_indices = data[coerced_values_mask].index 
+        for idx in invalid_indices: # append index of coerced values to dictionary 
+            if idx not in invalid_indices_dict:
+                invalid_indices_dict[idx] = []
+            invalid_indices_dict[idx].append({
+                'column': column,
+                'previous_value': data.at[idx, column]
+            })
+        data[column] = coerced_column # replace original column with coerced column 
+
+        #if 'age' in column.lower():
+        #    data[column] = np.where((data[column] >= 0) & (data[column] <= 100), data[column], np.nan)
     else:
         for row_idx, value in data[column].items():
             try:
@@ -41,7 +55,7 @@ for col_idx, column in enumerate(data.columns):
                         'column': column,
                         'previous_value': value,
                     })
-                    data.at[row_idx, column] = np.nan # convert numeric value in non-numeric column to NaN 
+                    data.at[row_idx, column] = np.nan  # convert numeric value in non-numeric column to NaN
             except ValueError:
                 pass
 print(data) 
@@ -59,9 +73,11 @@ for column in data.select_dtypes(include=['object']).columns:
     ordinal_encoders[column] = ordinal_encoder
 
 # Train 75%, Test 25%: after training, use unseen data in test subset to estimate algorithm accuracy and validity 
-train_data, test_data = train_test_split(data, test_size=0.25, random_state=0)
+train_data, test_data = train_test_split(data, test_size=0.25, random_state=0, shuffle=False)
 print(data)
 print(invalid_indices_dict)
+
+# Data visualisation before data cleaning process
 
 
 # Environment and Actions for RL
@@ -76,7 +92,6 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.num_col = len(self.data.columns)
         self.num_row = len(self.data)
         self.inaccurate_numbers = []
-        self.majority_type = None
         self.previous_na = self.data.isna().sum().sum()
 
         # Action space describes the possible values that actions can take (finite) 
@@ -107,25 +122,25 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
 
     # Iterate over each row in every column and apply impute_value where NaN, check_accuracy to all and calculate_reward when done with episode
     def step(self, action): 
-        row_i = action 
-        column_i = self.current_col
-        if self.data.iloc[row_i, column_i] == -9999 or pd.isna(self.data.iloc[row_i, column_i]): # Look for NaN values (or that were replaced with -9999)
-            try:
-                imputed_dataframe = self.impute_value()
-                self.data.iloc[row_i, column_i] = imputed_dataframe.iloc[row_i, column_i]
-            except (TypeError, ValueError):
-                pass
+        row_i = self.iteration + 1
+        column_i = self.current_col + 1
+        if row_i < self.num_row and column_i < self.num_col :
+            if self.data.iloc[row_i, column_i] == -9999 or pd.isna(self.data.iloc[row_i, column_i]): # Look for NaN values (or that were replaced with -9999)
+                try:
+                    imputed_dataframe = self.impute_value()
+                    self.data.iloc[row_i, column_i] = imputed_dataframe.iloc[row_i, column_i]
+                except (TypeError, ValueError):
+                    pass
                 
-        self.check_accuracy() # check if value is accurate (outliers)
-        self.data.iloc[row_i, column_i] = np.round(self.data.iloc[row_i, column_i]) # round values to next closest number
-        self.iteration += 1
-        
-        # Move to next column 
-        if self.iteration >= self.num_row:
-            self.iteration = 0 
-            self.current_col += 1
-        
-        done = self.current_col >= self.num_col 
+            self.check_accuracy() # check if value is accurate (outliers)
+            self.iteration += 1
+                
+            # Move to next column 
+            if self.iteration >= self.num_row:
+                self.iteration = 0 
+                self.current_col += 1
+            
+        done = self.current_col >= self.num_col and self.iteration >= self.num_row
         if done: 
             self.finish = True 
         reward = self.calculate_reward()
@@ -182,22 +197,8 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
                 na_reward = -current_na
             else:
                 na_reward = 1
-        
-        # Accuracy: the less outliers, the smaller the penalty 
-        if self.inaccurate_numbers.sum() >= 0:
-            outlier_reward += 1
-        self.imputed_data = pd.DataFrame(self.imputer.transform(self.data), columns=self.data.columns)
-        self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns)
-        outliers_ocsvm = self.ocsvm.predict(self.scaled_data) 
-        ocsvm_count = np.sum(outliers_ocsvm == -1) # count remaining outliers after each episode and calculate penalty 
-        if ocsvm_count == 0: # if no outliers then reward is 1, else reward is negative sum of remaining outliers
-            outlier_reward += 1
-        elif ocsvm_count != 0:
-            outlier_reward += -ocsvm_count
 
-        # Total reward 
-        full_reward = na_reward + outlier_reward
-        return full_reward
+        return na_reward
 
 
 class Agent: 
@@ -250,7 +251,6 @@ class Agent:
     def update_state(self, state):
         self.current_state = self.state_to_index(state) # state index updated 
 
-
 if __name__ == "__main__":
     env = Environment(train_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
@@ -272,7 +272,6 @@ if __name__ == "__main__":
 
             if done: 
                 print(f"Episode: {episode + 1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
-                np.round(env.data)
                 print(f"Invalid Numbers: {invalid_indices_dict}, Inaccurate Numbers: {env.inaccurate_numbers}")
                 print(env.data)
                 break
