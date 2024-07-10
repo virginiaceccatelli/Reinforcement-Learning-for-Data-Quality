@@ -23,11 +23,25 @@ data = pd.read_excel(file_path, header=0)
 
 solved_data = pd.read_excel(solved_file_path)
 
+# DATA VISUALISATION: before algorithm 
+column = "vehicle_fuel_type"
+data['missing_values'] = data[column].apply(lambda x: 'Missing' if pd.isna(x) else 'Value')
+combined_df = data.copy()
+combined_df[column] = combined_df[column].astype(str)
+combined_df.loc[data[column].isna(), column] = 'Missing: NA'
+plt.figure(figsize=(5, 3))
+sns.countplot(x=column, data=combined_df, order=combined_df[column].value_counts().index, palette='viridis')
+plt.title(f'Distribution of {column} with Missing Values Highlighted')
+plt.xlabel(column)
+plt.ylabel('Count')
+plt.show()
+
 # Data formatting  
+data = data.drop(columns=["missing_values"])
 data.replace(["NA", "", "null", "Na", "N/A", "na"], np.nan, inplace=True)
 print(data)
 
-# VALIDITY: invalid values are stored in dictionary - DATA TYPES 
+# FIRST VALIDITY CHECK: check after data types - invalid values are stored in dictionary 
 invalid_indices_dict = {}
 for column in data.columns:
     original_nan_mask = data[column].isna()
@@ -45,8 +59,6 @@ for column in data.columns:
             })
         data[column] = coerced_column # replace original column with coerced column 
 
-        #if 'age' in column.lower():
-        #    data[column] = np.where((data[column] >= 0) & (data[column] <= 100), data[column], np.nan)
     else:
         for row_idx, value in data[column].items():
             try:
@@ -88,8 +100,6 @@ for column in solved_data.select_dtypes(include=['object']).columns:
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0, shuffle=False)
 print(data)
 print(invalid_indices_dict)
-
-# Data visualisation before data cleaning process
 
 
 # Environment and Actions for RL
@@ -142,9 +152,13 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
     def step(self, action): 
         row_i = self.iteration 
         column_i = self.current_col
-        done = self.current_col == self.num_col - 1 and self.iteration == self.num_row - 1
+        print(f"current col: {self.current_col}, num col: {self.num_col}, iteration: {self.iteration}, num row: {self.num_row}")
+        done = self.current_col == self.num_col - 1
+        
         if column_i < self.num_col:
-            if self.data.iloc[row_i, column_i] == -9999 or pd.isna(self.data.iloc[row_i, column_i]): # Look for NaN values (or that were replaced with -9999)
+            self.check_validity() # check if value is valid (if invalid it is set to NaN and solved in next step)
+            
+            if self.data.iloc[row_i, column_i] == -9999 or pd.isna(self.data.iloc[row_i, column_i]): # check for NaN values (or that were replaced with -9999)
                 try:
                     self.data.iloc[row_i, column_i] = self.impute_value(action, row_i, column_i)    
                 except (TypeError, ValueError):
@@ -176,6 +190,11 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
             return self.imputed_data_knn[row_i, column_i]
         elif action == 2:
             return self.imputed_data_mean[row_i, column_i]
+
+    # SECOND VALIDITY CHECK: check after point of truth (e.g. age of driver above 85) 
+    def check_validity(self):
+        if "driver_age" in column.lower(): 
+            data[column] = np.where((data[column] >= 0) & (data[column] <= 85), data[column], np.nan)
         
     # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
     def check_accuracy(self): 
@@ -204,13 +223,13 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
                     'col': col_index,
                     'previous_value': self.data.iloc[row_index, col_index]
                 })
-                
-        # -- TO DO (eventually) -- within given boundary (very obvious outliers), values are either changed through best fit prediction or appended to inaccurate_numbers list
-        # IDEA: increase nu parameter linear to exploration factor epsilon (nu increases proportional to exploration rate, so that the agent can learn the optimal nu parameter) 
-        
+                        
     # Calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
     def calculate_reward(self, action, row_i, column_i):
         # Completeness: the less NaN values remaining and the closer they are to the solved dataset, the higher the reward
+        if column_i == self.num_col - 1: 
+            return 0 # No reward if it's the last loop
+        
         current_value = self.data.iloc[row_i, column_i]
         solved_value = self.solved_data.iloc[row_i, column_i]
         
@@ -292,7 +311,6 @@ if __name__ == "__main__":
         while True:
             action = agent.take_action(state)
             next_state, reward, done, _ = env.step(action)
-            reward = env.calculate_reward(action, env.iteration, env.current_col)
             agent.learn(state, next_state, action, reward, done) # SARS -> Q learning 
             
             state = next_state
@@ -314,3 +332,18 @@ if __name__ == "__main__":
         decoded_data[:, col_idx] = decoded_values
     decoded_data = pd.DataFrame(decoded_data, columns=env.data.columns)
     print(decoded_data)
+    
+    plt.figure(figsize=(5, 3))
+    sns.countplot(x="vehicle_fuel_type", data=decoded_data, palette="viridis")
+    plt.title("Distribution of vehicle_fuel_type after Algorithm")
+    plt.xlabel("vehicle_fuel_type")
+    plt.ylabel("Count")
+    plt.show()
+
+    plt.figure(figsize=(5, 3))
+    sns.countplot(x="vehicle_fuel_type", data=solved_data, palette="viridis")
+    plt.title("Distribution of vehicle_fuel_type in solved dataset")
+    plt.xticks(np.arange(2), ("Diesel", "Gasoline"))
+    plt.xlabel("vehicle_fuel_type")
+    plt.ylabel("Count")
+    plt.show()
