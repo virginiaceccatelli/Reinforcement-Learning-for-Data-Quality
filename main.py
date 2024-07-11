@@ -8,10 +8,10 @@ import gym
 from gym import spaces 
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.neighbors import KNeighborsClassifier 
-from sklearn.impute import IterativeImputer, SimpleImputer, KNNImputer
 from sklearn import metrics
 from sklearn.metrics import mean_squared_error
 from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import SimpleImputer, KNNImputer, IterativeImputer
 from sklearn.preprocessing import OrdinalEncoder
 from sklearn.model_selection import train_test_split
 from sklearn.svm import OneClassSVM
@@ -21,17 +21,17 @@ file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem
 solved_file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\solved_klein.xlsx"
 data = pd.read_excel(file_path, header=0)
 
-solved_data = pd.read_excel(solved_file_path)
+solved_data = pd.read_excel(solved_file_path, header=0)
 
 # DATA VISUALISATION: before algorithm 
-column = "vehicle_fuel_type"
+column = "vehicle_power"
 data['missing_values'] = data[column].apply(lambda x: 'Missing' if pd.isna(x) else 'Value')
 combined_df = data.copy()
 combined_df[column] = combined_df[column].astype(str)
-combined_df.loc[data[column].isna(), column] = 'Missing: NA'
+combined_df.loc[data[column].isna(), column] = 'NA'
 plt.figure(figsize=(5, 3))
-sns.countplot(x=column, data=combined_df, order=combined_df[column].value_counts().index, palette='viridis')
-plt.title(f'Distribution of {column} with Missing Values Highlighted')
+sns.countplot(x=column, data=combined_df, order=['very low', 'low', 'medium', 'high','very high', 'NA'], palette='viridis')
+plt.title(f'Distribution of {column} before Intervention')
 plt.xlabel(column)
 plt.ylabel('Count')
 plt.show()
@@ -40,6 +40,23 @@ plt.show()
 data = data.drop(columns=["missing_values"])
 data.replace(["NA", "", "null", "Na", "N/A", "na"], np.nan, inplace=True)
 print(data)
+
+# Comparison of the two datasets 
+def compare_datasets(df1, df2):
+    # Check if datasets have the same columns (if they are comparable) 
+    if df1.columns.tolist() != df2.columns.tolist():
+        raise ValueError("The datasets don't have the same columns.")
+    # Total number of cells
+    total_cells = df1.size
+    # Compare values of cells 
+    equal_cells = (df1 == df2).sum().sum()
+    # Calculate percentage of similarity 
+    similarity_ratio = (equal_cells / total_cells) * 100
+    return similarity_ratio
+
+# Percentage of similarity between datasets 
+similarity_pre = compare_datasets(data, solved_data)
+print(f"The datasets are similar to {similarity_pre:.2f}%")
 
 # FIRST VALIDITY CHECK: check after data types - invalid values are stored in dictionary 
 invalid_indices_dict = {}
@@ -73,6 +90,24 @@ for column in data.columns:
                     data.at[row_idx, column] = np.nan  # convert numeric value in non-numeric column to NaN
             except ValueError:
                 pass
+
+# SECOND VALIDITY CHECK: check after point of truth (e.g. age of driver above 85) 
+# Impute np.nan if driver_age is not between 0 and 85 
+for index, value in data['driver_age'].items():
+    if value < 18 or value > 85:
+        data.at[index, 'driver_age'] = np.nan
+        invalid_indices_dict[index].append({
+            'column': 'driver_age', 
+            'previous_value': value,
+        })
+
+# Impute 0 for vehicle_mileage if vehicle_age is 0, and vice versa (logic) 
+for index, row in data.iterrows():
+    if row['vehicle_age'] == 0:
+        data.at[index, 'vehicle_mileage'] = 0
+        
+    elif row['vehicle_mileage'] == 0:
+        data.at[index, 'vehicle_age'] = 0
 print(data) 
 
 # Encoding of categorical variables as numeric: decode after ML imputation to get original dataset 
@@ -99,6 +134,7 @@ for column in solved_data.select_dtypes(include=['object']).columns:
 # Train 75%, Test 25%: after training, use unseen data in test subset to estimate algorithm accuracy and validity 
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0, shuffle=False)
 print(data)
+print(solved_data)
 print(invalid_indices_dict)
 
 
@@ -115,57 +151,37 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.num_col = len(self.data.columns) 
         self.num_row = len(self.data) 
         self.inaccurate_numbers = []
-        self.previous_na = self.data.isna().sum().sum()
 
         # Action space describes the possible values that actions can take (finite) 
-        self.action_space = spaces.Discrete(3)
+        self.action_space = spaces.Discrete(2)
 
         # Observation space (Box) describes valid values that observations can take for consistent state representation  
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_row, self.num_col), dtype=np.float32) 
 
-        # Standardizing data for One-Class SVM outlier detection (accuracy) 
-        self.scaler = StandardScaler().fit(self.data.fillna(-9999)) # Standard Scaler cannot handle NaN values; they have to be transformed to out-of-bound number
-        self.scaled_data = pd.DataFrame(self.scaler.transform(self.data.fillna(-9999)), columns=self.data.columns) # transform data while maintaining dataframe structure and column names
-
-        self.ocsvm = OneClassSVM(nu=0.01, gamma='scale', kernel='rbf') # nu: upper bound on the fraction of margin errors and support vectors: at most 1% misinterpreted values
-        self.ocsvm.fit(self.scaled_data)
+        # Outliers for Accuracy: nu, gamma and kernel can be adjusted for optimal outcome (trial and error) 
+        self.ocsvm = OneClassSVM(nu=0.01, gamma=0.1, kernel='rbf') # nu: upper bound on the fraction of margin errors and support vectors: at most 1% misinterpreted values
         
-        # Imputation Techniques 
-        self.imputer = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
+        # Imputation Techniques initialised 
+        self.imputer_rf = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
         self.imputer_knn = KNNImputer(n_neighbors=5)
-        self.imputer_mean = SimpleImputer(strategy='mean')
-
 
     # Reset dataset back to original values after each episode of training 
     def reset(self):
         self.data = self.original_data.copy() 
         self.iteration = 0 
         self.current_col = 0 
-        self.previous_na = self.data.isna().sum().sum()
-        self.imputed_data = self.imputer.fit_transform(self.data)
-        self.imputed_data_knn = self.imputer_knn.fit_transform(self.data)
-        self.imputed_data_mean = self.imputer_mean.fit_transform(self.data)
-        self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns)
         return self.data.values.flatten() 
 
     # Iterate over each row in every column and apply impute_value where NaN, check_accuracy to all and calculate_reward when done with episode
     def step(self, action): 
         row_i = self.iteration 
         column_i = self.current_col
-        print(f"current col: {self.current_col}, num col: {self.num_col}, iteration: {self.iteration}, num row: {self.num_row}")
-        done = self.current_col == self.num_col - 1
+        done = self.current_col == self.num_col 
+        nan_positions = np.argwhere(self.data.isna().values)
         
-        if column_i < self.num_col:
-            self.check_validity() # check if value is valid (if invalid it is set to NaN and solved in next step)
-            
-            if self.data.iloc[row_i, column_i] == -9999 or pd.isna(self.data.iloc[row_i, column_i]): # check for NaN values (or that were replaced with -9999)
-                try:
-                    self.data.iloc[row_i, column_i] = self.impute_value(action, row_i, column_i)    
-                except (TypeError, ValueError):
-                    pass
-                    
-            self.check_accuracy() # check if value is accurate (outliers)
-
+        for position in nan_positions:
+            row_i, column_i = position 
+            self.impute_value(action, row_i, column_i)
         if done: 
             self.finish = True
             reward = self.calculate_reward(action, row_i, column_i)
@@ -179,71 +195,64 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         if self.iteration >= self.num_row:
             self.iteration = 0 
             self.current_col += 1
+        
         return self.data.values.flatten(), reward, done, {}
         
-    # COMPLETENESS: Impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor', 'K Nearest Neighbour' or the Mean
-    def impute_value(self, action, row_i, column_i):        
-        self.data.replace(-9999, np.nan, inplace=True)
+    # COMPLETENESS: Impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' or 'K Nearest Neighbour'
+    def impute_value(self, action, row_i, column_i): 
         if action == 0:
-            return self.imputed_data_rf[row_i, column_i]
+            X = self.data.values.astype(float)
+            imputed_value = self.imputer_rf.fit_transform(X)
         elif action == 1:
-            return self.imputed_data_knn[row_i, column_i]
-        elif action == 2:
-            return self.imputed_data_mean[row_i, column_i]
-
-    # SECOND VALIDITY CHECK: check after point of truth (e.g. age of driver above 85) 
-    def check_validity(self):
-        if "driver_age" in column.lower(): 
-            data[column] = np.where((data[column] >= 0) & (data[column] <= 85), data[column], np.nan)
+            X = self.data.values.astype(float)
+            imputed_value = self.imputer_knn.fit_transform(X)
+        else:
+            raise ValueError("Invalid action for imputation")
+        
+        # Update the DataFrame with imputed values
+        self.data.iloc[row_i, column_i] = imputed_value[row_i, column_i]
         
     # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
-    def check_accuracy(self): 
-        self.scaled_data = pd.DataFrame(self.scaler.transform(self.imputed_data), columns=self.data.columns) # maintain column names
-
+    def check_accuracy(self):
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(self.data)
+    
         # One-Class SVM for outlier detection
-        self.ocsvm.set_params(nu=0.01)
-        outliers_ocsvm = self.ocsvm.fit_predict(self.scaled_data)
+        outliers_ocsvm = self.ocsvm.fit_predict(scaled_data)
         outliers = np.where(outliers_ocsvm == -1)[0] # finds outliers
-        self.data[:] = self.scaler.inverse_transform(self.scaled_data) # transform scaled data back to original scale
+        inaccurate_set = {(entry['row'], entry['col']) for entry in self.inaccurate_numbers}
         
-        for index in outliers:
-            row_index = index // self.data.shape[1] # calculate row index 
-            col_index = index % self.data.shape[1]
-
-            if col_index == self.current_col: 
-                for entry in self.inaccurate_numbers:
-                    if entry['row'] == row_index and entry['col'] == col_index:
-                        self.inaccurate_numbers = [
-                            entry for entry in self.inaccurate_numbers
-                            if not (entry['row'] == row_index and entry['col'] == col_index)
-                        ]
+        for row_index in outliers:
+            for col_index in range(self.data.shape[1]):
+                if (row_index, col_index) not in inaccurate_set:
+                    self.inaccurate_numbers.append({ 
+                        'row': row_index,
+                        'col': col_index,
+                        'previous_value': self.data.iloc[row_index, col_index]
+                    })
             
-                self.inaccurate_numbers.append({ 
-                    'row': row_index,
-                    'col': col_index,
-                    'previous_value': self.data.iloc[row_index, col_index]
-                })
+        self.data[:] = scaler.inverse_transform(scaled_data) # transform back to original scale
                         
-    # Calculate reward based on reduction of NaN, consistency with allowed data types, accuracy of data imputs (-- TO DO --)
+    # Calculate reward based on similarity to solved dataset
     def calculate_reward(self, action, row_i, column_i):
         # Completeness: the less NaN values remaining and the closer they are to the solved dataset, the higher the reward
-        if column_i == self.num_col - 1: 
-            return 0 # No reward if it's the last loop
+        if column_i == self.num_col: 
+            return 0 # no reward if it's the last loop
         
         current_value = self.data.iloc[row_i, column_i]
         solved_value = self.solved_data.iloc[row_i, column_i]
         
-        if pd.isnull(current_value) or current_value == -9999:  # Handle NaN or imputed values
-            return 0  # No reward for missing values or already imputed values
+        if pd.isnull(current_value) or current_value == -9999:  
+            return 0  # no reward for missing values or already imputed values
 
-        print(f"Imputed Value: {current_value} and Solved Value: {solved_value}")
         diff = abs(current_value - solved_value)
-        # Reward based on the closeness of the imputed value to the solved value
         if diff == 0:
-            reward = 100  # Maximum reward for exact match
+            reward = 100  # maximum reward for exact match
         else:
-            reward = 100 / (diff + 1)  # Reward decreases as the difference increases
-    
+            reward = 100 / (diff + 1)  # reward decreases as the difference increases
+        #if reward < 5: # if reward is too low, the value is imputed again 
+        #    self.impute_value(action, row_i, column_i)
+
         return reward
 
 
@@ -289,6 +298,7 @@ class Agent:
         td_prediction = reward + (self.gamma * self.q_table[state_index][best_next_action] * (1 - done)) # TD prediction formula: reward + discounting rate * max Q(S(t+1), A), (1 - done) to ignore terminal rewards that are irrelevant
         td_error = td_prediction - self.q_table[state_index][action] # TD error formula: TD prediction - current Q(S, A) 
         self.q_table[state_index][action] += self.lr * td_error # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
+
     
         # decrease exploration to encourage exploitation with each episode 
         if done: 
@@ -299,7 +309,7 @@ class Agent:
 
 
 if __name__ == "__main__":
-    env = Environment(train_data, solved_data)
+    env = Environment(data, solved_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
     
     episodes = 1
@@ -312,38 +322,59 @@ if __name__ == "__main__":
             action = agent.take_action(state)
             next_state, reward, done, _ = env.step(action)
             agent.learn(state, next_state, action, reward, done) # SARS -> Q learning 
-            
             state = next_state
             total_reward += reward
             print(f"Episode: {episode + 1}, Row: {env.iteration}, Column: {env.current_col}, Reward: {reward}")
 
             if done: 
+                #env.check_accuracy()
                 print(f"Episode: {episode + 1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
                 print(f"Invalid Numbers: {invalid_indices_dict}, Inaccurate Numbers: {env.inaccurate_numbers}")
+                env.data.round()
                 print(env.data)
                 break
+
+    # Decode training data (problem dataset)     
+    decoded_data = env.data.copy()
+    for column in decoded_data.columns:
+        if column in ordinal_encoders:
+            ordinal_encoder = ordinal_encoders[column]
+            col_idx = decoded_data.columns.get_loc(column)
+            
+            # Inverse transform encoded values to original categorical labels
+            encoded_values = decoded_data[column].to_numpy().astype(int)  # Convert column to numpy array of integers
+            decoded_values = ordinal_encoder.inverse_transform(encoded_values.reshape(-1, 1)).flatten()
+            
+            # Assign decoded_values back to the corresponding column in decoded_data DataFrame
+            decoded_data[column] = decoded_values.astype(str)
     
-    np.round(env.data)
-    decoded_data = env.data.copy().to_numpy()
-    for column in ordinal_encoders:
-        col_idx = env.data.columns.get_loc(column)
-        ordinal_encoder = ordinal_encoders[column]
-        decoded_values = ordinal_encoder.inverse_transform(decoded_data[:, col_idx].astype(int).reshape(-1, 1)).flatten()
-        decoded_data[:, col_idx] = decoded_values
-    decoded_data = pd.DataFrame(decoded_data, columns=env.data.columns)
+    columns_to_convert = ['vehicle_age', 'driver_age', 'driver_bonus_malus', 'vehicle_mileage']
+    for column in columns_to_convert:
+        decoded_data[column] = decoded_data[column].astype(int)
     print(decoded_data)
     
+    # Solved dataset reloaded
+    solved_data_original = pd.read_excel(solved_file_path, header = 0) # reload dataset from file path because solved_dataset was encoded (encoding necessary for reward function)
+    float_columns = solved_data_original.select_dtypes(include=['float']).columns
+    for column in float_columns:
+        solved_data_original[column] = solved_data_original[column].astype(int)
+    print(solved_data_original) 
+        
+    # Percentage of similarity between datasets 
+    similarity = compare_datasets(decoded_data, solved_data_original)
+    print(f"The datasets are similar to {similarity:.2f}%")
+    
+    # Data visualisation of the the two datasets 
     plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_fuel_type", data=decoded_data, palette="viridis")
-    plt.title("Distribution of vehicle_fuel_type after Algorithm")
-    plt.xlabel("vehicle_fuel_type")
+    sns.countplot(x="vehicle_power", data=decoded_data, palette="viridis")
+    plt.title("Distribution of vehicle power after Algorithm")
+    plt.xlabel("vehicle power")
     plt.ylabel("Count")
     plt.show()
 
     plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_fuel_type", data=solved_data, palette="viridis")
-    plt.title("Distribution of vehicle_fuel_type in solved dataset")
-    plt.xticks(np.arange(2), ("Diesel", "Gasoline"))
-    plt.xlabel("vehicle_fuel_type")
+    sns.countplot(x="vehicle_power", data=solved_data_original, palette="viridis")
+    plt.title("Distribution of vehicle power in solved dataset")
+    plt.xlabel("vehicle power")
     plt.ylabel("Count")
     plt.show()
