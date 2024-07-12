@@ -30,7 +30,7 @@ combined_df = data.copy()
 combined_df[column] = combined_df[column].astype(str)
 combined_df.loc[data[column].isna(), column] = 'NA'
 plt.figure(figsize=(5, 3))
-sns.countplot(x=column, data=combined_df, order=['very low', 'low', 'medium', 'high','very high', 'NA'], palette='viridis')
+sns.countplot(x=column, data=combined_df, order=['very low', 'low', 'medium', 'high','very high', 'NA', '1.0', '9.0'], palette='viridis')
 plt.title(f'Distribution of {column} before Intervention')
 plt.xlabel(column)
 plt.ylabel('Count')
@@ -96,6 +96,8 @@ for column in data.columns:
 for index, value in data['driver_age'].items():
     if value < 18 or value > 85:
         data.at[index, 'driver_age'] = np.nan
+        if index not in invalid_indices_dict:
+            invalid_indices_dict[index] = []  # create an empty list if index does not exist
         invalid_indices_dict[index].append({
             'column': 'driver_age', 
             'previous_value': value,
@@ -150,9 +152,9 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.current_col = 0
         self.num_col = len(self.data.columns) 
         self.num_row = len(self.data) 
-        self.inaccurate_numbers = []
+        self.nan_positions = np.argwhere(self.data.isna().values)
 
-        # Action space describes the possible values that actions can take (finite) 
+        # Action space describes the possible values that actions can take (finite: imputation techniques) 
         self.action_space = spaces.Discrete(2)
 
         # Observation space (Box) describes valid values that observations can take for consistent state representation  
@@ -164,102 +166,86 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         # Imputation Techniques initialised 
         self.imputer_rf = IterativeImputer(estimator=RandomForestRegressor(), max_iter=10, random_state=0)
         self.imputer_knn = KNNImputer(n_neighbors=5)
+        self.imputed_rf_data = self.imputer_rf.fit_transform(self.data.values.astype(float))
+        self.imputed_knn_data = self.imputer_knn.fit_transform(self.data.values.astype(float))
 
     # Reset dataset back to original values after each episode of training 
     def reset(self):
         self.data = self.original_data.copy() 
         self.iteration = 0 
-        self.current_col = 0 
+        self.inaccurate_numbers = []
+        self.nan_positions = np.argwhere(self.data.isna().values)
+        self.imputed_rf_data = self.imputer_rf.fit_transform(self.data.values.astype(float))
+        self.imputed_knn_data = self.imputer_knn.fit_transform(self.data.values.astype(float))
+        self.finish = False
         return self.data.values.flatten() 
 
     # Iterate over each row in every column and apply impute_value where NaN, check_accuracy to all and calculate_reward when done with episode
     def step(self, action): 
-        row_i = self.iteration 
-        column_i = self.current_col
-        done = self.current_col == self.num_col 
-        nan_positions = np.argwhere(self.data.isna().values)
+        done = False 
         
-        for position in nan_positions:
-            row_i, column_i = position 
+        for row_i, column_i in self.nan_positions:
             self.impute_value(action, row_i, column_i)
-        if done: 
-            self.finish = True
             reward = self.calculate_reward(action, row_i, column_i)
-            return self.data.values.flatten(), reward, done, {}
-        
-        # Move to next row
-        reward = self.calculate_reward(action, row_i, column_i)
-        self.iteration += 1
-            
-        # Move to next column 
-        if self.iteration >= self.num_row:
-            self.iteration = 0 
-            self.current_col += 1
-        
-        return self.data.values.flatten(), reward, done, {}
+        accuracy = self.check_accuracy()
+        self.data = self.data.round()
+        done = True                
+        return self.data.values.flatten(), reward, done, accuracy, {}
         
     # COMPLETENESS: Impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' or 'K Nearest Neighbour'
     def impute_value(self, action, row_i, column_i): 
         if action == 0:
-            X = self.data.values.astype(float)
-            imputed_value = self.imputer_rf.fit_transform(X)
+            imputed_value = self.imputed_rf_data 
         elif action == 1:
-            X = self.data.values.astype(float)
-            imputed_value = self.imputer_knn.fit_transform(X)
-        else:
-            raise ValueError("Invalid action for imputation")
-        
+            imputed_value = self.imputed_knn_data
+
         # Update the DataFrame with imputed values
         self.data.iloc[row_i, column_i] = imputed_value[row_i, column_i]
         
-    # ACCURACY: To replace inaccurate values (that are disproportionate/ outliers compared to the rest of the data) with predicted values
+    # ACCURACY: To highlight inaccurate values that are disproportionate/ outliers compared to the rest of the data
     def check_accuracy(self):
-        scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(self.data)
+        flattened_data = self.data.values.flatten().reshape(-1, 1)
+        self.ocsvm.fit(flattened_data)
+        predictions = self.ocsvm.predict(flattened_data)
     
         # One-Class SVM for outlier detection
-        outliers_ocsvm = self.ocsvm.fit_predict(scaled_data)
-        outliers = np.where(outliers_ocsvm == -1)[0] # finds outliers
-        inaccurate_set = {(entry['row'], entry['col']) for entry in self.inaccurate_numbers}
+        inliers = np.sum(predictions == 1)
+        outliers = np.sum(predictions == -1)
         
-        for row_index in outliers:
-            for col_index in range(self.data.shape[1]):
-                if (row_index, col_index) not in inaccurate_set:
-                    self.inaccurate_numbers.append({ 
-                        'row': row_index,
-                        'col': col_index,
-                        'previous_value': self.data.iloc[row_index, col_index]
-                    })
-            
-        self.data[:] = scaler.inverse_transform(scaled_data) # transform back to original scale
+        # Calculate the accuracy based on the proportion of inliers
+        self.accuracy = (inliers / (inliers + outliers)) * 100
+        return self.accuracy
                         
     # Calculate reward based on similarity to solved dataset
     def calculate_reward(self, action, row_i, column_i):
         # Completeness: the less NaN values remaining and the closer they are to the solved dataset, the higher the reward
-        if column_i == self.num_col: 
-            return 0 # no reward if it's the last loop
-        
-        current_value = self.data.iloc[row_i, column_i]
-        solved_value = self.solved_data.iloc[row_i, column_i]
-        
-        if pd.isnull(current_value) or current_value == -9999:  
-            return 0  # no reward for missing values or already imputed values
+        total_similarity = 0
+        total_values = 0
 
-        diff = abs(current_value - solved_value)
-        if diff == 0:
-            reward = 100  # maximum reward for exact match
-        else:
-            reward = 100 / (diff + 1)  # reward decreases as the difference increases
-        #if reward < 5: # if reward is too low, the value is imputed again 
-        #    self.impute_value(action, row_i, column_i)
+        for row_i, column_i in self.nan_positions:
+            current_value = self.data.iloc[row_i, column_i]
+            solved_value = self.solved_data.iloc[row_i, column_i]
 
-        return reward
+            if pd.isnull(current_value):
+                return -1  # negative reward calculation for missing values
+
+            current_value_rounded = current_value.round().astype(type(current_value))  # round to whole number
+            diff = abs(current_value - solved_value)
+            similarity = 1 / (diff + 1)  # the reward increases with similarity (inverse of difference)
+            total_similarity += similarity
+            total_values += 1
+
+        if total_values == 0:
+            return 0  # no valid values to compare
+
+        average_similarity = total_similarity / total_values
+        return average_similarity * 100  # Scale to percentage
 
 
 class Agent: 
     def __init__(self, n_state, n_action): 
         # values (especially epsilon and gamma) can be adjusted for best outcome (trial and error) 
-        self.epsilon = 0.8 # exploration 
+        self.epsilon = 0.5 # exploration 
         self.min_epsilon = 0.01 # min exploration as exploitation becomes more important
         self.lr = 0.2 # learning rate: adjust Q values to converge towards optimal strategy 
         self.gamma = 0.8 # discounting rate (value of future rewards)
@@ -284,7 +270,7 @@ class Agent:
     # Q learning Algorithm with epsilon greedy policy iteration 
     def take_action(self, state):
         state_index = self.state_to_index(state) # state indexing
-        if np.random.rand() <= self.epsilon: # epsilon greedy strategy for current state
+        if np.random.rand() < self.epsilon: # epsilon greedy strategy for current state
             return np.random.randint(self.n_action) # exploration epsilon % of the time 
         return np.argmax(self.q_table[state_index]) # otherwise exploit accumulated knowledge: choose maximal value in Q table
 
@@ -299,7 +285,6 @@ class Agent:
         td_error = td_prediction - self.q_table[state_index][action] # TD error formula: TD prediction - current Q(S, A) 
         self.q_table[state_index][action] += self.lr * td_error # TD learning formula: Q(S, A) + TD error * learning rate (alpha)
 
-    
         # decrease exploration to encourage exploitation with each episode 
         if done: 
             self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma) # choose max value between epsilon * discounting rate and 0.01 (convergence towards exploitation)
@@ -308,32 +293,29 @@ class Agent:
         self.current_state = self.state_to_index(state) # state index updated 
 
 
+
 if __name__ == "__main__":
     env = Environment(data, solved_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
-    
-    episodes = 1
+
+    episodes = 30
     for episode in range(episodes):
         state = env.reset()
         agent.update_state(state)
-        total_reward = 0
         
         while True:
             action = agent.take_action(state)
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, done, accuracy, _ = env.step(action)
             agent.learn(state, next_state, action, reward, done) # SARS -> Q learning 
             state = next_state
-            total_reward += reward
-            print(f"Episode: {episode + 1}, Row: {env.iteration}, Column: {env.current_col}, Reward: {reward}")
+            print(f"Episode: {episode + 1}, Reward: {reward}")
 
-            if done: 
-                #env.check_accuracy()
-                print(f"Episode: {episode + 1}, Total Reward: {total_reward}, Exploration Rate: {agent.epsilon}")
-                print(f"Invalid Numbers: {invalid_indices_dict}, Inaccurate Numbers: {env.inaccurate_numbers}")
-                env.data.round()
-                print(env.data)
+            if done:
+                print(f"Episode: {episode + 1}, Accuracy: {accuracy:.2f}%")
+                episode_rewards.append(total_reward)
+                round(env.data)
                 break
-
+    
     # Decode training data (problem dataset)     
     decoded_data = env.data.copy()
     for column in decoded_data.columns:
