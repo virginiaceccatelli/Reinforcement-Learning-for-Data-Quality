@@ -48,10 +48,14 @@ def compare_datasets(df1, df2):
         raise ValueError("The datasets don't have the same columns.")
     # Total number of cells
     total_cells = df1.size
-    # Compare values of cells 
-    equal_cells = (df1 == df2).sum().sum()
+    # Compare values of cells (equal)
+    equal_cells = df1 == df2
+    # Compare values of cells (similar numbers, within tolerance of +1,-1) 
+    numeric_cols = df1.select_dtypes(include='number').columns
+    very_close_matches = ((df1[numeric_cols] - df2[numeric_cols]).abs() <= 1) & ~equal_cells[numeric_cols]
     # Calculate percentage of similarity 
-    similarity_ratio = (equal_cells / total_cells) * 100
+    total_matches = equal_cells.sum().sum() + very_close_matches.sum().sum()
+    similarity_ratio = (total_matches / total_cells) * 100
     return similarity_ratio
 
 # Percentage of similarity between datasets 
@@ -137,7 +141,7 @@ for column in solved_data.select_dtypes(include=['object']).columns:
 train_data, test_data = train_test_split(data, test_size=0.25, random_state=0, shuffle=False)
 print(data)
 print(solved_data)
-print(invalid_indices_dict)
+print(f"Invalid Values: {invalid_indices_dict}")
 
 
 # Environment and Actions for RL
@@ -184,20 +188,20 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
     def step(self, action): 
         done = False 
         
-        for row_i, column_i in self.nan_positions:
+        for row_i, column_i in self.nan_positions: # impute value for each cell in nan_positions (all missing values)
             self.impute_value(action, row_i, column_i)
-            reward = self.calculate_reward(action, row_i, column_i)
-        accuracy = self.check_accuracy()
+            reward = self.calculate_reward(action, row_i, column_i) # calculate the reward for the NA reduction 
+        accuracy = self.check_accuracy() # calculate accuracy score based on number of outliers 
         self.data = self.data.round()
         done = True                
         return self.data.values.flatten(), reward, done, accuracy, {}
         
     # COMPLETENESS: Impute missing values based on ML imputation method 'Iterative Imputer' using 'Random Forest Regressor' or 'K Nearest Neighbour'
     def impute_value(self, action, row_i, column_i): 
-        if action == 0:
-            imputed_value = self.imputed_rf_data 
-        elif action == 1:
-            imputed_value = self.imputed_knn_data
+        if action == 0: # if the action chosen in the Agent class is Random Forest Regressor 
+            imputed_value = self.imputed_rf_data # use RFR
+        elif action == 1: # if the action chosen in the Agent class is KNN
+            imputed_value = self.imputed_knn_data # use KNN 
 
         # Update the DataFrame with imputed values
         self.data.iloc[row_i, column_i] = imputed_value[row_i, column_i]
@@ -206,14 +210,14 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
     def check_accuracy(self):
         flattened_data = self.data.values.flatten().reshape(-1, 1)
         self.ocsvm.fit(flattened_data)
-        predictions = self.ocsvm.predict(flattened_data)
+        predictions = self.ocsvm.predict(flattened_data) # predict outliers on the data given 
     
         # One-Class SVM for outlier detection
-        inliers = np.sum(predictions == 1)
-        outliers = np.sum(predictions == -1)
+        inliers = np.sum(predictions == 1) # not outliers
+        outliers = np.sum(predictions == -1) # outliers
         
         # Calculate the accuracy based on the proportion of inliers
-        self.accuracy = (inliers / (inliers + outliers)) * 100
+        self.accuracy = (inliers / (inliers + outliers)) * 100 
         return self.accuracy
                         
     # Calculate reward based on similarity to solved dataset
@@ -222,9 +226,10 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         total_similarity = 0
         total_values = 0
 
-        for row_i, column_i in self.nan_positions:
-            current_value = self.data.iloc[row_i, column_i]
-            solved_value = self.solved_data.iloc[row_i, column_i]
+        # for each cell in nan_positions (all missing values) find the value that was imputed and the true value (solved dataset) 
+        for row_i, column_i in self.nan_positions: 
+            current_value = self.data.iloc[row_i, column_i] # imputed value
+            solved_value = self.solved_data.iloc[row_i, column_i] # true value in solved dataset
 
             if pd.isnull(current_value):
                 return -1  # negative reward calculation for missing values
@@ -238,14 +243,14 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         if total_values == 0:
             return 0  # no valid values to compare
 
-        average_similarity = total_similarity / total_values
-        return average_similarity * 100  # Scale to percentage
+        average_similarity = total_similarity / total_values # calculate similarity between imputed values and true values in solved dataset 
+        return average_similarity * 100  
 
 
 class Agent: 
     def __init__(self, n_state, n_action): 
         # values (especially epsilon and gamma) can be adjusted for best outcome (trial and error) 
-        self.epsilon = 0.5 # exploration 
+        self.epsilon = 0.8 # exploration 
         self.min_epsilon = 0.01 # min exploration as exploitation becomes more important
         self.lr = 0.2 # learning rate: adjust Q values to converge towards optimal strategy 
         self.gamma = 0.8 # discounting rate (value of future rewards)
@@ -293,31 +298,43 @@ class Agent:
         self.current_state = self.state_to_index(state) # state index updated 
 
 
-
 if __name__ == "__main__":
     env = Environment(data, solved_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
 
-    episodes = 30
+    episodes = 20 # number of times the algorithm should run 
+    episode_rewards = []  # to store rewards of each episode
     for episode in range(episodes):
         state = env.reset()
         agent.update_state(state)
+        total_reward = 0 
         
         while True:
-            action = agent.take_action(state)
-            next_state, reward, done, accuracy, _ = env.step(action)
+            action = agent.take_action(state) # choose imputation action (RFR or KNN based on which is predicted to result in a higher reward) 
+            next_state, reward, done, accuracy, _ = env.step(action) # impute value, calculate reward, check accuracy score 
             agent.learn(state, next_state, action, reward, done) # SARS -> Q learning 
             state = next_state
-            print(f"Episode: {episode + 1}, Reward: {reward}")
+            total_reward += reward
+            print(f"Episode: {episode + 1}, Reward: {total_reward}")
 
             if done:
                 print(f"Episode: {episode + 1}, Accuracy: {accuracy:.2f}%")
                 episode_rewards.append(total_reward)
                 round(env.data)
                 break
+
+        if total_reward == max(episode_rewards):
+            best_data = env.data.copy()
+            
+    optimal_episode_index = np.argmax(episode_rewards) # find the optimal episode with the highest reward and use that imputed data for result 
+    optimal_episode_reward = episode_rewards[optimal_episode_index]
+    print(f"Optimal Episode: {optimal_episode_index + 1}, Reward: {optimal_episode_reward}")
+    best_data = best_data.round()
+    print("Optimal Dataset:")
+    print(best_data)
     
     # Decode training data (problem dataset)     
-    decoded_data = env.data.copy()
+    decoded_data = best_data.copy()
     for column in decoded_data.columns:
         if column in ordinal_encoders:
             ordinal_encoder = ordinal_encoders[column]
@@ -330,15 +347,15 @@ if __name__ == "__main__":
             # Assign decoded_values back to the corresponding column in decoded_data DataFrame
             decoded_data[column] = decoded_values.astype(str)
     
-    columns_to_convert = ['vehicle_age', 'driver_age', 'driver_bonus_malus', 'vehicle_mileage']
+    columns_to_convert = ['vehicle_age', 'driver_age', 'driver_bonus_malus', 'vehicle_mileage'] # convert these columns to integers 
     for column in columns_to_convert:
         decoded_data[column] = decoded_data[column].astype(int)
     print(decoded_data)
     
     # Solved dataset reloaded
     solved_data_original = pd.read_excel(solved_file_path, header = 0) # reload dataset from file path because solved_dataset was encoded (encoding necessary for reward function)
-    float_columns = solved_data_original.select_dtypes(include=['float']).columns
-    for column in float_columns:
+    float_columns = solved_data_original.select_dtypes(include=['float']).columns # convert all columns with dtype float to integers 
+    for column in float_columns: 
         solved_data_original[column] = solved_data_original[column].astype(int)
     print(solved_data_original) 
         
@@ -348,14 +365,14 @@ if __name__ == "__main__":
     
     # Data visualisation of the the two datasets 
     plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_power", data=decoded_data, palette="viridis")
+    sns.countplot(x="vehicle_power", data=decoded_data, order=['very low', 'low', 'medium', 'high','very high'], palette='viridis')
     plt.title("Distribution of vehicle power after Algorithm")
     plt.xlabel("vehicle power")
     plt.ylabel("Count")
     plt.show()
 
     plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_power", data=solved_data_original, palette="viridis")
+    sns.countplot(x="vehicle_power", data=solved_data_original, order=['very low', 'low', 'medium', 'high','very high'], palette='viridis')
     plt.title("Distribution of vehicle power in solved dataset")
     plt.xlabel("vehicle power")
     plt.ylabel("Count")
