@@ -6,7 +6,7 @@ The algorithm takes a dataset as input and curates it in terms of data completen
   - Invalid values (out-of-bound invalid values such as incorrect age and invalid datatypes) are replaced with the same process
   - Outliers are detected and the overall accuracy of the dataset, related to the number of detected outliers (non-normal instances), is highlighted. This is done through a Machine Learning Algorithm: One Class Support Vector Machine 
 
-# Algorithms used: 
+## Algorithms used: 
 Reinforcement Learning Algorithms: 
 Q Learning: Q Learning uses Q-values, which estimate the expected utility of taking a given action in a given state and updates these values using the Bellman equation. This equation calculates the best action to take to achieve the most rewards. The main advantage of Q-learning is its simplicity and ability to learn optimal policies, while its disadvantages include potential inefficiency in large state spaces and slow convergence.
 Temporal Difference Learning: TD learning updates value estimates based on the difference between successive predictions – it therefore calculates what the best next action would be to achieve the highest reward. Its main advantage is the ability to learn directly from raw experience, allowing for faster learning and more efficient use of data. However, its disadvantages include potential instability in its predictions.
