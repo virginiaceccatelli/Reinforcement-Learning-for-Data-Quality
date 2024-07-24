@@ -17,8 +17,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.svm import OneClassSVM
 from sklearn.preprocessing import StandardScaler
 
-file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\problem_klein.xlsx"
-solved_file_path = r"C:\Users\4967\OneDrive - Wavestone Germany Group\Dokumente\solved_klein.xlsx"
+file_path = FILE PATH
+solved_file_path = FILE PATH
 data = pd.read_excel(file_path, header=0)
 
 solved_data = pd.read_excel(solved_file_path, header=0)
