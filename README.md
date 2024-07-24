@@ -1,4 +1,4 @@
-# Reinforcement-Learning-for-Data-Quality
+# Reinforcement Learning for Data Quality Automation
 
 This project focuses on automating and enhancing data-cleaning processes through a Reinforcement Learning Algorithm. 
 The algorithm takes a dataset as input and curates it in terms of data completeness, data validity and data accuracy: 
