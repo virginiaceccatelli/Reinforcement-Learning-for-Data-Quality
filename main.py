@@ -95,7 +95,7 @@ for column in data.columns:
             except ValueError:
                 pass
 
-# SECOND VALIDITY CHECK: check after point of truth (e.g. age of driver above 85) 
+# SECOND VALIDITY CHECK: check after point of truth (e.g. age of driver above 85) - adjustable to specific dataset
 # Impute np.nan if driver_age is not between 0 and 85 
 for index, value in data['driver_age'].items():
     if value < 18 or value > 85:
