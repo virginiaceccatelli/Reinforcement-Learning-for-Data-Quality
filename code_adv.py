@@ -23,19 +23,6 @@ data = pd.read_excel(file_path, header=0)
 
 solved_data = pd.read_excel(solved_file_path, header=0)
 
-# DATA VISUALISATION: before algorithm 
-column = "vehicle_power"
-data['missing_values'] = data[column].apply(lambda x: 'Missing' if pd.isna(x) else 'Value')
-combined_df = data.copy()
-combined_df[column] = combined_df[column].astype(str)
-combined_df.loc[data[column].isna(), column] = 'NA'
-plt.figure(figsize=(5, 3))
-sns.countplot(x=column, data=combined_df, order=['very low', 'low', 'medium', 'high','very high', 'NA', '1.0', '9.0'], palette='viridis')
-plt.title(f'Distribution of {column} before Intervention')
-plt.xlabel(column)
-plt.ylabel('Count')
-plt.show()
-
 # Data formatting  
 data = data.drop(columns=["missing_values"])
 data.replace(["NA", "", "null", "Na", "N/A", "na"], np.nan, inplace=True)
@@ -92,25 +79,6 @@ for column in data.columns:
                 pass
 
 # SECOND VALIDITY CHECK: check after point of truth (e.g. age of driver above 85) - adjustable to specific dataset 
-# Impute np.nan if driver_age is not between 0 and 85 
-for index, value in data['driver_age'].items():
-    if value < 18 or value > 85:
-        data.at[index, 'driver_age'] = np.nan
-        if index not in invalid_indices_dict:
-            invalid_indices_dict[index] = []  # create an empty list if index does not exist
-        invalid_indices_dict[index].append({
-            'column': 'driver_age', 
-            'previous_value': value,
-        })
-
-# Impute 0 for vehicle_mileage if vehicle_age is 0, and vice versa (logic) 
-for index, row in data.iterrows():
-    if row['vehicle_age'] == 0:
-        data.at[index, 'vehicle_mileage'] = 0
-        
-    elif row['vehicle_mileage'] == 0:
-        data.at[index, 'vehicle_age'] = 0
-print(data) 
 
 # Encoding of categorical variables as numeric: decode after ML imputation to get original dataset 
 ordinal_encoders = {}
@@ -244,7 +212,7 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
 
 class Agent: 
     def __init__(self, n_state, n_action): 
-        # values (especially epsilon and gamma) can be adjusted for best outcome (trial and error) 
+        # values can be adjusted for best outcome (trial and error) 
         self.epsilon = 0.5 # exploration 
         self.min_epsilon = 0.01 # min exploration as exploitation becomes more important
         self.lr = 0.2 # learning rate: adjust Q values to converge towards optimal strategy 
@@ -275,8 +243,8 @@ class Agent:
         return np.argmax(self.q_table[state_index]) # otherwise exploit accumulated knowledge: choose maximal value in Q table
 
     def learn(self, state, next_state, action, reward, done): 
-        state_index = self.state_to_index(state) # state indexing
-        next_state_index = self.state_to_index(next_state) # next state indexing 
+        state_index = self.state_to_index(state)
+        next_state_index = self.state_to_index(next_state) 
         action = int(action) # convert action to integer 
 
         # Temporal Difference Learning for Policy Evaluation 
@@ -287,7 +255,7 @@ class Agent:
 
         # decrease exploration to encourage exploitation with each episode 
         if done: 
-            self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma) # choose max value between epsilon * discounting rate and 0.01 (convergence towards exploitation)
+            self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma) 
 
     def update_state(self, state):
         self.current_state = self.state_to_index(state) # state index updated 
@@ -298,7 +266,7 @@ if __name__ == "__main__":
     env = Environment(data, solved_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
 
-    episodes = 30
+    episodes = 100
     for episode in range(episodes):
         state = env.reset()
         agent.update_state(state)
@@ -324,19 +292,19 @@ if __name__ == "__main__":
             col_idx = decoded_data.columns.get_loc(column)
             
             # Inverse transform encoded values to original categorical labels
-            encoded_values = decoded_data[column].to_numpy().astype(int)  # Convert column to numpy array of integers
+            encoded_values = decoded_data[column].to_numpy().astype(int)  
             decoded_values = ordinal_encoder.inverse_transform(encoded_values.reshape(-1, 1)).flatten()
             
             # Assign decoded_values back to the corresponding column in decoded_data DataFrame
             decoded_data[column] = decoded_values.astype(str)
     
-    columns_to_convert = ['vehicle_age', 'driver_age', 'driver_bonus_malus', 'vehicle_mileage']
+    columns_to_convert = []
     for column in columns_to_convert:
         decoded_data[column] = decoded_data[column].astype(int)
     print(decoded_data)
     
     # Solved dataset reloaded
-    solved_data_original = pd.read_excel(solved_file_path, header = 0) # reload dataset from file path because solved_dataset was encoded (encoding necessary for reward function)
+    solved_data_original = pd.read_excel(solved_file_path, header = 0) # reload dataset from file path because solved_dataset was encoded
     float_columns = solved_data_original.select_dtypes(include=['float']).columns
     for column in float_columns:
         solved_data_original[column] = solved_data_original[column].astype(int)
@@ -345,18 +313,3 @@ if __name__ == "__main__":
     # Percentage of similarity between datasets 
     similarity = compare_datasets(decoded_data, solved_data_original)
     print(f"The datasets are similar to {similarity:.2f}%")
-    
-    # Data visualisation of the the two datasets 
-    plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_power", data=decoded_data, palette="viridis")
-    plt.title("Distribution of vehicle power after Algorithm")
-    plt.xlabel("vehicle power")
-    plt.ylabel("Count")
-    plt.show()
-
-    plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_power", data=solved_data_original, palette="viridis")
-    plt.title("Distribution of vehicle power in solved dataset")
-    plt.xlabel("vehicle power")
-    plt.ylabel("Count")
-    plt.show()
