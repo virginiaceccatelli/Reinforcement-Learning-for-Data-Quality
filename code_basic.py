@@ -20,24 +20,9 @@ from sklearn.preprocessing import StandardScaler
 file_path = FILE PATH
 solved_file_path = FILE PATH
 data = pd.read_excel(file_path, header=0)
-
 solved_data = pd.read_excel(solved_file_path, header=0)
 
-# DATA VISUALISATION: before algorithm 
-column = "vehicle_power"
-data['missing_values'] = data[column].apply(lambda x: 'Missing' if pd.isna(x) else 'Value')
-combined_df = data.copy()
-combined_df[column] = combined_df[column].astype(str)
-combined_df.loc[data[column].isna(), column] = 'NA'
-plt.figure(figsize=(5, 3))
-sns.countplot(x=column, data=combined_df, order=['very low', 'low', 'medium', 'high','very high', 'NA', '1.0', '9.0'], palette='viridis')
-plt.title(f'Distribution of {column} before Intervention')
-plt.xlabel(column)
-plt.ylabel('Count')
-plt.show()
-
 # Data formatting  
-data = data.drop(columns=["missing_values"])
 data.replace(["NA", "", "null", "Na", "N/A", "na"], np.nan, inplace=True)
 print(data)
 
@@ -45,7 +30,7 @@ print(data)
 def compare_datasets(df1, df2):
     # Check if datasets have the same columns (if they are comparable) 
     if df1.columns.tolist() != df2.columns.tolist():
-        raise ValueError("The datasets don't have the same columns.")
+        raise ValueError("the datasets are not comparable.")
     # Total number of cells
     total_cells = df1.size
     # Compare values of cells (equal)
@@ -94,27 +79,6 @@ for column in data.columns:
                     data.at[row_idx, column] = np.nan  # convert numeric value in non-numeric column to NaN
             except ValueError:
                 pass
-
-# SECOND VALIDITY CHECK: check after point of truth (e.g. age of driver above 85) - adjustable to specific dataset
-# Impute np.nan if driver_age is not between 0 and 85 
-for index, value in data['driver_age'].items():
-    if value < 18 or value > 85:
-        data.at[index, 'driver_age'] = np.nan
-        if index not in invalid_indices_dict:
-            invalid_indices_dict[index] = []  # create an empty list if index does not exist
-        invalid_indices_dict[index].append({
-            'column': 'driver_age', 
-            'previous_value': value,
-        })
-
-# Impute 0 for vehicle_mileage if vehicle_age is 0, and vice versa (logic) 
-for index, row in data.iterrows():
-    if row['vehicle_age'] == 0:
-        data.at[index, 'vehicle_mileage'] = 0
-        
-    elif row['vehicle_mileage'] == 0:
-        data.at[index, 'vehicle_age'] = 0
-print(data) 
 
 # Encoding of categorical variables as numeric: decode after ML imputation to get original dataset 
 ordinal_encoders = {}
@@ -184,7 +148,6 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         self.finish = False
         return self.data.values.flatten() 
 
-    # Iterate over each row in every column and apply impute_value where NaN, check_accuracy to all and calculate_reward when done with episode
     def step(self, action): 
         done = False 
         
@@ -226,7 +189,6 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         total_similarity = 0
         total_values = 0
 
-        # for each cell in nan_positions (all missing values) find the value that was imputed and the true value (solved dataset) 
         for row_i, column_i in self.nan_positions: 
             current_value = self.data.iloc[row_i, column_i] # imputed value
             solved_value = self.solved_data.iloc[row_i, column_i] # true value in solved dataset
@@ -234,7 +196,7 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
             if pd.isnull(current_value):
                 return -1  # negative reward calculation for missing values
 
-            current_value_rounded = current_value.round().astype(type(current_value))  # round to whole number
+            current_value_rounded = current_value.round().astype(type(current_value)) 
             diff = abs(current_value - solved_value)
             similarity = 1 / (diff + 1)  # the reward increases with similarity (inverse of difference)
             total_similarity += similarity
@@ -243,10 +205,10 @@ class Environment(gym.Env): # OpenAI Gym Environment Inheritance
         if total_values == 0:
             return 0  # no valid values to compare
 
-        average_similarity = total_similarity / total_values # calculate similarity between imputed values and true values in solved dataset 
+        average_similarity = total_similarity / total_values 
         return average_similarity * 100  
 
-
+# Q learning agent class 
 class Agent: 
     def __init__(self, n_state, n_action): 
         # values (especially epsilon and gamma) can be adjusted for best outcome (trial and error) 
@@ -262,11 +224,11 @@ class Agent:
             
     def state_to_index(self, state):
         # Convert state to tuple and map to a unique index
-        if isinstance(state, (list, tuple, np.ndarray)): # Check if state is iterable: if it is then it is converted to a tuple 
+        if isinstance(state, (list, tuple, np.ndarray)): 
             state_tuple = tuple(state)
         else:
             state_tuple = (state,) # if it is not then it is converted to a tuple with single instance  
-        if state_tuple not in self.state_index_map: # if the state tuple is not already in the state index map dictionary it is added
+        if state_tuple not in self.state_index_map: 
             self.state_index_map[state_tuple] = self.next_state_index
             self.q_table[self.next_state_index] = np.zeros(self.n_action) # the Q table is updated 
             self.next_state_index += 1 # index count is updated 
@@ -274,14 +236,14 @@ class Agent:
         
     # Q learning Algorithm with epsilon greedy policy iteration 
     def take_action(self, state):
-        state_index = self.state_to_index(state) # state indexing
+        state_index = self.state_to_index(state) 
         if np.random.rand() < self.epsilon: # epsilon greedy strategy for current state
             return np.random.randint(self.n_action) # exploration epsilon % of the time 
         return np.argmax(self.q_table[state_index]) # otherwise exploit accumulated knowledge: choose maximal value in Q table
 
     def learn(self, state, next_state, action, reward, done): 
-        state_index = self.state_to_index(state) # state indexing
-        next_state_index = self.state_to_index(next_state) # next state indexing 
+        state_index = self.state_to_index(state) 
+        next_state_index = self.state_to_index(next_state) 
         action = int(action) # convert action to integer 
 
         # Temporal Difference Learning for Policy Evaluation 
@@ -292,18 +254,18 @@ class Agent:
 
         # decrease exploration to encourage exploitation with each episode 
         if done: 
-            self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma) # choose max value between epsilon * discounting rate and 0.01 (convergence towards exploitation)
+            self.epsilon = max(self.min_epsilon, self.epsilon * self.gamma) 
 
     def update_state(self, state):
-        self.current_state = self.state_to_index(state) # state index updated 
+        self.current_state = self.state_to_index(state) 
 
 
 if __name__ == "__main__":
     env = Environment(data, solved_data)
     agent = Agent(n_state=env.observation_space.shape[0], n_action=env.action_space.n)
 
-    episodes = 20 # number of times the algorithm should run 
-    episode_rewards = []  # to store rewards of each episode
+    episodes = 100 # number of times the algorithm should run 
+    episode_rewards = [] 
     for episode in range(episodes):
         state = env.reset()
         agent.update_state(state)
@@ -312,7 +274,7 @@ if __name__ == "__main__":
         while True:
             action = agent.take_action(state) # choose imputation action (RFR or KNN based on which is predicted to result in a higher reward) 
             next_state, reward, done, accuracy, _ = env.step(action) # impute value, calculate reward, check accuracy score 
-            agent.learn(state, next_state, action, reward, done) # SARS -> Q learning 
+            agent.learn(state, next_state, action, reward, done)
             state = next_state
             total_reward += reward
             print(f"Episode: {episode + 1}, Reward: {total_reward}")
@@ -347,14 +309,14 @@ if __name__ == "__main__":
             # Assign decoded_values back to the corresponding column in decoded_data DataFrame
             decoded_data[column] = decoded_values.astype(str)
     
-    columns_to_convert = ['vehicle_age', 'driver_age', 'driver_bonus_malus', 'vehicle_mileage'] # convert these columns to integers 
+    columns_to_convert = [] # convert these columns to integers 
     for column in columns_to_convert:
         decoded_data[column] = decoded_data[column].astype(int)
     print(decoded_data)
     
     # Solved dataset reloaded
     solved_data_original = pd.read_excel(solved_file_path, header = 0) # reload dataset from file path because solved_dataset was encoded (encoding necessary for reward function)
-    float_columns = solved_data_original.select_dtypes(include=['float']).columns # convert all columns with dtype float to integers 
+    float_columns = solved_data_original.select_dtypes(include=['float']).columns 
     for column in float_columns: 
         solved_data_original[column] = solved_data_original[column].astype(int)
     print(solved_data_original) 
@@ -363,17 +325,3 @@ if __name__ == "__main__":
     similarity = compare_datasets(decoded_data, solved_data_original)
     print(f"The datasets are similar to {similarity:.2f}%")
     
-    # Data visualisation of the the two datasets 
-    plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_power", data=decoded_data, order=['very low', 'low', 'medium', 'high','very high'], palette='viridis')
-    plt.title("Distribution of vehicle power after Algorithm")
-    plt.xlabel("vehicle power")
-    plt.ylabel("Count")
-    plt.show()
-
-    plt.figure(figsize=(5, 3))
-    sns.countplot(x="vehicle_power", data=solved_data_original, order=['very low', 'low', 'medium', 'high','very high'], palette='viridis')
-    plt.title("Distribution of vehicle power in solved dataset")
-    plt.xlabel("vehicle power")
-    plt.ylabel("Count")
-    plt.show()
